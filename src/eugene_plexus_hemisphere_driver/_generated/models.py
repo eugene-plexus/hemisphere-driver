@@ -7,18 +7,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from pydantic import AnyUrl, AwareDatetime, BaseModel, ConfigDict, Field
-
-
-class Hemisphere(StrEnum):
-    """
-    When `role == "hemisphere"`, identifies which hemisphere
-    produced this message (e.g. `"left"`, `"right"`). Omitted otherwise.
-
-    """
-
-    left = 'left'
-    right = 'right'
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 
 class Role(StrEnum):
@@ -30,45 +19,6 @@ class Role(StrEnum):
     user = 'user'
     assistant = 'assistant'
     hemisphere = 'hemisphere'
-
-
-class Message(BaseModel):
-    """
-    A single message in an Eugene Plexus conversation. The shape is
-    deliberately close to the OpenAI / Anthropic chat message format so
-    that adapters don't have to re-shape on every hop, but `role` includes
-    `hemisphere` for messages emitted by an individual hemisphere during
-    the bicameral pass (visible to corpus callosum and UI debug views,
-    not normally to the end user).
-
-    """
-
-    role: Role
-    content: str = Field(
-        ...,
-        description='Message text. v0.1 is text-only; multimodal extensions deferred.',
-    )
-    hemisphere: Hemisphere | None = Field(
-        None,
-        description='When `role == "hemisphere"`, identifies which hemisphere\nproduced this message (e.g. `"left"`, `"right"`). Omitted otherwise.\n',
-    )
-    timestamp: AwareDatetime | None = Field(
-        None, description='When the message was produced. Server-assigned if omitted.'
-    )
-    passIndex: int | None = Field(
-        None,
-        description='Zero-based index of the bicameral pass that produced this message.\nPass 0 is the initial hemisphere response; subsequent passes are\nre-prompts after corpus-callosum disagreement.\n',
-        ge=0,
-    )
-
-
-class Conversation(BaseModel):
-    """
-    An ordered list of messages constituting a conversation history.
-    """
-
-    id: UUID | None = Field(None, description='Server-assigned conversation id.')
-    messages: list[Message]
 
 
 class NTState(BaseModel):
@@ -117,7 +67,7 @@ class NTState(BaseModel):
     )
 
 
-class Hemisphere1(StrEnum):
+class Hemisphere(StrEnum):
     """
     Which hemisphere of the bicameral pair.
     """
@@ -149,16 +99,18 @@ class Problem(BaseModel):
 
     """
 
-    type: AnyUrl = Field(
-        ..., description='A URI reference identifying the problem type.'
+    type: str = Field(
+        ...,
+        description='A URI reference identifying the problem type, per RFC 7807.\nModeled as a plain string rather than `format: uri` to keep\nsentinel values like `about:blank` and ergonomic at call sites.\n',
     )
     title: str = Field(..., description='Short human-readable summary.')
     status: int = Field(..., description='HTTP status code.')
     detail: str | None = Field(
         None, description='Human-readable explanation specific to this occurrence.'
     )
-    instance: AnyUrl | None = Field(
-        None, description='A URI reference identifying the specific occurrence.'
+    instance: str | None = Field(
+        None,
+        description='A URI reference identifying the specific occurrence. Modeled\nas a plain string for the same reason as `type`.\n',
     )
     component: str | None = Field(
         None,
@@ -366,12 +318,69 @@ class Capabilities(BaseModel):
 
 class DriverInfo(BaseModel):
     backend: BackendKind
-    modelId: str = Field(..., description='Backend-specific model identifier.')
-    hemisphere: Hemisphere1
+    modelId: str | None = Field(
+        None,
+        description='Backend-specific model identifier (e.g. `"claude-opus-4-7"`).\nOptional — omitted when the driver is configured to use the\nadapter\'s built-in default rather than pinning a specific model.\n',
+    )
+    hemisphere: Hemisphere
     capabilities: Capabilities | None = Field(
         None, description='Optional backend capabilities the orchestrator may key off.'
     )
     version: str | None = Field(None, description='hemisphere-driver semver.')
+
+
+class Message(BaseModel):
+    """
+    A single message in an Eugene Plexus conversation. The shape is
+    deliberately close to the OpenAI / Anthropic chat message format so
+    that adapters don't have to re-shape on every hop, but `role` includes
+    `hemisphere` for messages emitted by an individual hemisphere during
+    the bicameral pass (visible to corpus callosum and UI debug views,
+    not normally to the end user).
+
+    """
+
+    role: Role
+    content: str = Field(
+        ...,
+        description='Message text. v0.1 is text-only; multimodal extensions deferred.',
+    )
+    hemisphere: Hemisphere | None = Field(
+        None,
+        description='When `role == "hemisphere"`, identifies which hemisphere\nproduced this message. Omitted otherwise.\n',
+    )
+    timestamp: AwareDatetime | None = Field(
+        None, description='When the message was produced. Server-assigned if omitted.'
+    )
+    passIndex: int | None = Field(
+        None,
+        description='Zero-based index of the bicameral pass that produced this message.\nPass 0 is the initial hemisphere response; subsequent passes are\nre-prompts after corpus-callosum disagreement.\n',
+        ge=0,
+    )
+
+
+class Conversation(BaseModel):
+    """
+    An ordered list of messages constituting a conversation history.
+    """
+
+    id: UUID | None = Field(None, description='Server-assigned conversation id.')
+    messages: list[Message]
+
+
+class GenerateResponse(BaseModel):
+    content: str = Field(..., description='The generated assistant text.')
+    finishReason: FinishReason
+    usage: Usage | None = None
+    requestId: UUID | None = None
+    backend: BackendKind | None = None
+    modelId: str | None = Field(
+        None,
+        description='Backend-specific model identifier (e.g. `"claude-opus-4-7"`).',
+    )
+    latencyMs: int | None = Field(
+        None, description='End-to-end driver-side latency in milliseconds.'
+    )
 
 
 class GenerateRequest(BaseModel):
@@ -395,19 +404,4 @@ class GenerateRequest(BaseModel):
     requestId: UUID | None = Field(
         None,
         description='Caller-supplied id for log correlation. Echoed in the response.',
-    )
-
-
-class GenerateResponse(BaseModel):
-    content: str = Field(..., description='The generated assistant text.')
-    finishReason: FinishReason
-    usage: Usage | None = None
-    requestId: UUID | None = None
-    backend: BackendKind | None = None
-    modelId: str | None = Field(
-        None,
-        description='Backend-specific model identifier (e.g. `"claude-opus-4-7"`).',
-    )
-    latencyMs: int | None = Field(
-        None, description='End-to-end driver-side latency in milliseconds.'
     )

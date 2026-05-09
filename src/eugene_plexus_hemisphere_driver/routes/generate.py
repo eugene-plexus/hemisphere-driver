@@ -16,11 +16,7 @@ def _not_implemented(operation: str) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
         detail=Problem(
-            # TODO(specs): Problem.type is generated as AnyUrl because the spec
-            # uses `format: uri`. Pydantic accepts strings here at runtime;
-            # plain string is more ergonomic for callers. Either drop the
-            # format hint or model it as `string` in a follow-up specs PR.
-            type="https://github.com/eugene-plexus/hemisphere-driver#not-implemented",  # type: ignore[arg-type]
+            type="https://github.com/eugene-plexus/hemisphere-driver#not-implemented",
             title="Not Implemented",
             status=501,
             detail=f"{operation} is not yet wired up; v0.1 scaffolding only.",
