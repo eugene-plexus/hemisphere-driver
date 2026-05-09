@@ -10,35 +10,35 @@ The orchestrator runs **two** instances of this service side-by-side, typically 
 
 ## Status
 
-**v0.1, scaffolding stage.** The HTTP surface, config protocol, and adapter framework are in place. CLI subprocess plumbing for Claude Code CLI and Codex CLI is the next milestone.
+**v0.1, working CLI adapters.** The HTTP surface, config protocol, and both CLI adapters (`claude_code_cli`, `codex_cli`) are wired up end-to-end. Streaming (`/v1/generate/stream`) lands alongside the orchestrator + UI consumers.
 
 ## Wire contract
 
 This service implements the [`hemisphere-driver.yaml`](https://github.com/eugene-plexus/specs/blob/main/openapi/hemisphere-driver.yaml) OpenAPI 3.1 spec from the [`eugene-plexus/specs`](https://github.com/eugene-plexus/specs) repo. Pydantic models in `src/eugene_plexus_hemisphere_driver/_generated/` are produced via codegen (see [Codegen](#codegen)).
 
-Endpoints implemented in v0.1 scaffolding:
+Endpoints:
 
-| Method | Path                  | Status     |
-|--------|-----------------------|------------|
-| GET    | `/healthz`            | ✅          |
-| GET    | `/v1/info`            | ✅          |
-| GET    | `/v1/config`          | ✅          |
-| GET    | `/v1/config/schema`   | ✅          |
-| PATCH  | `/v1/config`          | ✅          |
-| POST   | `/v1/generate`        | stub (501) |
-| POST   | `/v1/generate/stream` | stub (501) |
+| Method | Path                  | Status      |
+|--------|-----------------------|-------------|
+| GET    | `/healthz`            | ✅           |
+| GET    | `/v1/info`            | ✅           |
+| GET    | `/v1/config`          | ✅           |
+| GET    | `/v1/config/schema`   | ✅           |
+| PATCH  | `/v1/config`          | ✅           |
+| POST   | `/v1/generate`        | ✅           |
+| POST   | `/v1/generate/stream` | stub (501)  |
 
 ## Backends (adapters)
 
 v0.1 ships with two CLI subprocess adapters; API adapters and OpenAI-compatible HTTP land in v0.2.
 
-| Adapter            | Status | Notes |
-|--------------------|--------|-------|
-| `claude_code_cli`  | stub   | Wraps the `claude` CLI (Anthropic). |
-| `codex_cli`        | stub   | Wraps the `codex` CLI (OpenAI). |
-| `anthropic_api`    | v0.2+  | Direct HTTP. Pay-per-token. |
-| `openai_api`       | v0.2+  | Direct HTTP. Pay-per-token. |
-| `openai_compat_http` | v0.2+ | Ollama, vLLM, LM Studio, etc. |
+| Adapter              | Status   | Notes |
+|----------------------|----------|-------|
+| `claude_code_cli`    | ✅ wired | Wraps `claude` v2.1+. Reads single JSON envelope from `--print --output-format json`. |
+| `codex_cli`          | ✅ wired | Wraps `codex-cli` v0.130+. Parses JSONL stream from `codex exec --json`. |
+| `anthropic_api`      | v0.2+    | Direct HTTP. Pay-per-token. |
+| `openai_api`         | v0.2+    | Direct HTTP. Pay-per-token. |
+| `openai_compat_http` | v0.2+    | Ollama, vLLM, LM Studio, etc. |
 
 The CLI adapters are **primary production mode for personal installations** — they run on the AI subscription you already pay for, no separate API bill.
 

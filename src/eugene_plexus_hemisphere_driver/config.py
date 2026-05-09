@@ -126,6 +126,19 @@ FIELDS: list[ConfigField] = [
         minimum=0.0,
         maximum=2.0,
     ),
+    ConfigField(
+        key="requestTimeoutSeconds",
+        label="Request Timeout",
+        description=(
+            "Maximum seconds the driver will wait for one CLI invocation "
+            "before killing the subprocess and returning an error."
+        ),
+        category="generation",
+        valueType=ConfigValueType.duration,
+        default=120,
+        minimum=5,
+        maximum=900,
+    ),
 ]
 
 _FIELDS_BY_KEY: dict[str, ConfigField] = {f.key: f for f in FIELDS}
