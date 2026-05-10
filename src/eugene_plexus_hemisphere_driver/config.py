@@ -52,16 +52,6 @@ FIELDS: list[ConfigField] = [
         requiresRestart=True,
     ),
     ConfigField(
-        key="hemisphere",
-        label="Hemisphere",
-        description="Which side of the bicameral pair this instance is.",
-        category="adapter",
-        valueType=ConfigValueType.enum,
-        default="left",
-        enumValues=["left", "right"],
-        required=True,
-    ),
-    ConfigField(
         key="modelId",
         label="Model ID",
         description=(

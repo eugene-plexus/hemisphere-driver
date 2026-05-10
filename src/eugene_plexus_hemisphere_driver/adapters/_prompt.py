@@ -17,8 +17,8 @@ def messages_to_prompt(messages: list[Message]) -> str:
     lines: list[str] = []
     for msg in messages:
         role = _role_str(msg.role)
-        if msg.role == Role.hemisphere and msg.hemisphere is not None:
-            label = f"[HEMISPHERE-{msg.hemisphere.value.upper()}]"
+        if msg.role == Role.hemisphere and msg.driverName:
+            label = f"[HEMISPHERE-{msg.driverName.upper()}]"
         elif msg.role == Role.system:
             label = "[SYSTEM]"
         elif msg.role == Role.user:

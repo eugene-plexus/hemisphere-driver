@@ -28,7 +28,6 @@ def degraded_app_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Se
     config_path.write_text(
         """\
 adapter: openai_api
-hemisphere: left
 modelId: gpt-5
 openaiBaseUrl: https://api.openai.com
 port: 8081
