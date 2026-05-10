@@ -45,11 +45,14 @@ def _patch_run_cli(
     fn: Callable[[list[str]], Awaitable[CliResult] | CliResult],
 ) -> dict[str, Any]:
     """Replace adapters._subprocess.run_cli with `fn` and capture argv calls."""
-    captured: dict[str, Any] = {"argv": None, "timeout": None}
+    captured: dict[str, Any] = {"argv": None, "timeout": None, "stdin_input": None}
 
-    async def _fake_run_cli(argv: list[str], *, timeout_seconds: float) -> CliResult:
+    async def _fake_run_cli(
+        argv: list[str], *, timeout_seconds: float, stdin_input: bytes | None = None
+    ) -> CliResult:
         captured["argv"] = argv
         captured["timeout"] = timeout_seconds
+        captured["stdin_input"] = stdin_input
         result = fn(argv)
         if hasattr(result, "__await__"):
             return await result  # type: ignore[no-any-return]
@@ -115,16 +118,18 @@ async def test_claude_adapter_parses_success_envelope(
     # Reflects cache reads as part of prompt accounting.
     assert response.usage.promptTokens == 6 + 33349
 
-    # argv shape: claude --print --output-format json --model <id> "<prompt>"
-    assert captured["argv"][:5] == [
+    # argv shape: claude --print --output-format json --model <id>
+    # User prompt now goes via stdin (argv-newline issue on Windows).
+    assert captured["argv"] == [
         "claude",
         "--print",
         "--output-format",
         "json",
         "--model",
+        "claude-opus-4-7",
     ]
-    assert captured["argv"][5] == "claude-opus-4-7"
-    assert captured["argv"][-1].startswith("[USER]")
+    assert captured["stdin_input"] is not None
+    assert captured["stdin_input"].startswith(b"[USER]")
     assert captured["timeout"] == 30.0
 
 
@@ -143,6 +148,53 @@ async def test_claude_adapter_omits_model_when_not_pinned(
     adapter = ClaudeCodeCliAdapter()  # model_id=None
     await adapter.generate(_request())
     assert "--model" not in captured["argv"]
+
+
+async def test_claude_adapter_handles_multiline_history_via_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: prior assistant messages with newlines must not break argv.
+
+    On Windows, cmd.exe (which wraps `claude.cmd`) treats a literal newline
+    inside a quoted argv item as a command separator, so a multi-line user
+    prompt would corrupt the command line. Piping the user prompt through
+    stdin sidesteps this entirely.
+    """
+    captured = _patch_run_cli(
+        monkeypatch,
+        lambda argv: CliResult(
+            stdout=json.dumps(CLAUDE_OK_ENVELOPE).encode(),
+            stderr=b"",
+            returncode=0,
+            elapsed_ms=1000,
+        ),
+    )
+    adapter = ClaudeCodeCliAdapter()
+    await adapter.generate(
+        GenerateRequest(
+            messages=[
+                Message(role=Role.system, content="You are Eugene."),
+                Message(role=Role.user, content="First question?"),
+                Message(
+                    role=Role.assistant,
+                    content="A multi-paragraph reply.\n\nSecond paragraph here.\n\nThird.",
+                ),
+                Message(role=Role.user, content="Follow-up\nwith\nnewlines"),
+            ]
+        )
+    )
+    # Argv must NOT contain the prompt content. Only flags + values.
+    for item in captured["argv"]:
+        assert "First question" not in item
+        assert "Second paragraph" not in item
+        assert "Follow-up" not in item
+    # Prompt content must be on stdin instead.
+    stdin = captured["stdin_input"]
+    assert stdin is not None
+    decoded = stdin.decode("utf-8")
+    assert "First question?" in decoded
+    assert "Second paragraph here." in decoded
+    assert "Follow-up\nwith\nnewlines" in decoded
 
 
 async def test_claude_adapter_raises_on_is_error(

@@ -47,7 +47,7 @@ FIELDS: list[ConfigField] = [
         category="adapter",
         valueType=ConfigValueType.enum,
         default="claude_code_cli",
-        enumValues=["claude_code_cli", "codex_cli"],
+        enumValues=["claude_code_cli", "codex_cli", "openai_api"],
         required=True,
         requiresRestart=True,
     ),
@@ -86,6 +86,29 @@ FIELDS: list[ConfigField] = [
         category="adapter",
         valueType=ConfigValueType.file_path,
         default="codex",
+    ),
+    ConfigField(
+        key="openaiApiKey",
+        label="OpenAI API key",
+        description=(
+            "API key sent as `Authorization: Bearer ...`. Used when adapter is "
+            "openai_api. Falls back to the OPENAI_API_KEY env var when unset."
+        ),
+        category="adapter",
+        valueType=ConfigValueType.secret,
+        sensitive=True,
+    ),
+    ConfigField(
+        key="openaiBaseUrl",
+        label="OpenAI base URL",
+        description=(
+            "Base URL of the OpenAI-compatible HTTP API. Default targets OpenAI; "
+            "override for OpenAI-compatible providers (Together, Groq, MiniMax, "
+            "vLLM, LM Studio, etc)."
+        ),
+        category="adapter",
+        valueType=ConfigValueType.url,
+        default="https://api.openai.com",
     ),
     ConfigField(
         key="port",

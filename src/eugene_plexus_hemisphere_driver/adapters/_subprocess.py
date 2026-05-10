@@ -24,13 +24,21 @@ class CliResult:
     elapsed_ms: int
 
 
-async def run_cli(argv: list[str], *, timeout_seconds: float) -> CliResult:
+async def run_cli(
+    argv: list[str],
+    *,
+    timeout_seconds: float,
+    stdin_input: bytes | None = None,
+) -> CliResult:
     """Run argv as a subprocess. Returns stdout/stderr/returncode + elapsed time.
 
-    Stdin is closed (DEVNULL) so the CLI never blocks waiting for input it
-    won't get. The caller is expected to encode the prompt directly into
-    argv. Raises `CliError` on timeout; non-zero exit is returned to the
-    caller for inspection.
+    When `stdin_input` is None, stdin is closed (DEVNULL) so the CLI never
+    blocks. When provided, stdin_input is written to the child's stdin and
+    closed — useful for prompt content that contains newlines, which can't
+    safely round-trip through argv on Windows (cmd.exe interprets a literal
+    newline inside a quoted argv item as a command separator). Raises
+    `CliError` on timeout; non-zero exit is returned to the caller for
+    inspection.
     """
     if not argv:
         raise ValueError("argv is empty")
@@ -46,12 +54,15 @@ async def run_cli(argv: list[str], *, timeout_seconds: float) -> CliResult:
     start = time.perf_counter()
     proc = await asyncio.create_subprocess_exec(
         *argv,
-        stdin=asyncio.subprocess.DEVNULL,
+        stdin=asyncio.subprocess.PIPE if stdin_input is not None else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=stdin_input),
+            timeout=timeout_seconds,
+        )
     except TimeoutError as e:
         proc.kill()
         await proc.wait()

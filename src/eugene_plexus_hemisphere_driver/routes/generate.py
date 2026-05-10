@@ -20,7 +20,22 @@ log = logging.getLogger(__name__)
 
 @router.post("/v1/generate", response_model=GenerateResponse)
 async def generate(request: Request, body: GenerateRequest) -> GenerateResponse:
-    adapter: _Adapter = request.app.state.adapter
+    adapter: _Adapter | None = request.app.state.adapter
+    if adapter is None:
+        adapter_error = getattr(request.app.state, "adapter_error", None)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=Problem(
+                type="https://github.com/eugene-plexus/hemisphere-driver#adapter-not-configured",
+                title="Adapter not configured",
+                status=503,
+                detail=(
+                    f"This driver has no working adapter. {adapter_error or 'Unknown error.'} "
+                    "Update the configuration via PATCH /v1/config and restart the driver."
+                ),
+                component="hemisphere-driver:degraded",
+            ).model_dump(exclude_none=True),
+        )
     try:
         return await adapter.generate(body)
     except CliError as e:

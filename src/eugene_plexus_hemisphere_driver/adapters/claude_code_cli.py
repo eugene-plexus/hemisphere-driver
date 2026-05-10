@@ -40,6 +40,7 @@ from .._generated.models import (
     FinishReason,
     GenerateRequest,
     GenerateResponse,
+    Role,
     Usage,
 )
 from ._prompt import messages_to_prompt
@@ -67,8 +68,28 @@ class ClaudeCodeCliAdapter:
         self._timeout_seconds = timeout_seconds
 
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
-        argv = self._build_argv(messages_to_prompt(list(request.messages)))
-        result = await run_cli(argv, timeout_seconds=self._timeout_seconds)
+        # Split system messages from the rest. Claude Code's --system-prompt
+        # *replaces* its default system prompt entirely (which also disables
+        # the "current working directory: ..." injection per the CLI's own
+        # docs), giving us closer-to-raw-LLM behavior than passing system
+        # text inside the user-message argv.
+        system_messages = [m for m in request.messages if m.role == Role.system]
+        other_messages = [m for m in request.messages if m.role != Role.system]
+        system_prompt = "\n\n".join(m.content for m in system_messages).strip()
+        user_prompt = messages_to_prompt(other_messages)
+
+        # The user-prompt transcript can contain newlines (paragraph breaks
+        # in prior assistant messages, multi-line user input, etc). On
+        # Windows, putting that on argv breaks: cmd.exe — which wraps
+        # `claude.cmd` — treats a literal newline inside a quoted arg as a
+        # command separator. Pipe via stdin instead. Claude Code reads
+        # stdin under --print when no positional prompt is given.
+        argv = self._build_argv(system_prompt=system_prompt)
+        result = await run_cli(
+            argv,
+            timeout_seconds=self._timeout_seconds,
+            stdin_input=user_prompt.encode("utf-8"),
+        )
 
         if result.returncode != 0:
             raise CliError(
@@ -111,16 +132,18 @@ class ClaudeCodeCliAdapter:
         raise NotImplementedError("ClaudeCodeCliAdapter.stream not implemented in v0.1")
         yield  # pragma: no cover
 
-    def _build_argv(self, prompt: str) -> list[str]:
+    def _build_argv(self, *, system_prompt: str) -> list[str]:
         argv = [
             self._binary_path,
             "--print",
             "--output-format",
             "json",
         ]
+        if system_prompt:
+            argv += ["--system-prompt", system_prompt]
         if self._model_id:
             argv += ["--model", self._model_id]
-        argv.append(prompt)
+        # No positional prompt; user prompt is piped via stdin.
         return argv
 
 

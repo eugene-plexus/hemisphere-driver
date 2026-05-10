@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Protocol
@@ -12,12 +13,15 @@ from . import __version__
 from ._generated.models import GenerateRequest, GenerateResponse
 from .adapters.claude_code_cli import ClaudeCodeCliAdapter
 from .adapters.codex_cli import CodexCliAdapter
+from .adapters.openai_api import OpenAiApiAdapter
 from .config import ConfigStore
 from .routes import config as config_routes
 from .routes import generate as generate_routes
 from .routes import health as health_routes
 from .routes import info as info_routes
 from .settings import Settings, load_settings
+
+log = logging.getLogger(__name__)
 
 
 class _Adapter(Protocol):
@@ -44,7 +48,16 @@ def build_adapter(store: ConfigStore) -> _Adapter:
             model_id=model_id,
             timeout_seconds=timeout,
         )
-    raise ValueError(f"unknown adapter {adapter_kind!r}; valid: claude_code_cli, codex_cli")
+    if adapter_kind == "openai_api":
+        return OpenAiApiAdapter(
+            api_key=str(store.get("openaiApiKey") or "") or None,
+            base_url=str(store.get("openaiBaseUrl") or "https://api.openai.com"),
+            model_id=model_id or "gpt-5",
+            timeout_seconds=timeout,
+        )
+    raise ValueError(
+        f"unknown adapter {adapter_kind!r}; valid: claude_code_cli, codex_cli, openai_api"
+    )
 
 
 @asynccontextmanager
@@ -53,7 +66,27 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     store = ConfigStore(settings.config_file)
     store.load()
     app.state.config_store = store
-    app.state.adapter = build_adapter(store)
+
+    # Adapter construction can fail (missing API key, unknown adapter kind,
+    # bad binary path, etc). The driver MUST come up anyway so its
+    # /v1/config endpoints stay reachable — otherwise a broken config locks
+    # operators out of fixing it through the UI, exactly the OpenClaw
+    # failure mode this project exists to avoid. We record the error on
+    # app.state and let /v1/generate surface it as a 503 until the config
+    # is fixed and the driver restarted.
+    try:
+        app.state.adapter = build_adapter(store)
+        app.state.adapter_error = None
+        log.info("adapter ready: %s", app.state.adapter.backend_kind)
+    except Exception as e:
+        app.state.adapter = None
+        app.state.adapter_error = str(e)
+        log.error(
+            "adapter initialization failed (%s); driver running in degraded "
+            "mode — fix config via /v1/config and restart",
+            e,
+        )
+
     yield
 
 
