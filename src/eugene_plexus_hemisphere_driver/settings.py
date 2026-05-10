@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     bind_host: str = "127.0.0.1"
     """Network interface to bind. Override to 0.0.0.0 for tailnet exposure."""
 
+    safe_mode: bool = False
+    """If true, skip loading the persisted config file at startup and run on
+    built-in defaults. Set by the watchdog via EUGENE_PLEXUS_HD_SAFE_MODE=1
+    when a previous boot failed because the config was broken; lets the
+    operator reach /v1/config to fix it. PATCH /v1/config still writes to
+    `config_file` normally, so the next non-safe-mode boot picks up the
+    repair. Per the safe-mode contract in specs/openapi/hemisphere-driver.yaml."""
+
 
 def load_settings() -> Settings:
     return Settings()

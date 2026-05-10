@@ -18,12 +18,14 @@ async def healthz(request: Request) -> Health:
     # generate anything until the operator fixes config.
     adapter = getattr(request.app.state, "adapter", None)
     adapter_error = getattr(request.app.state, "adapter_error", None)
+    safe_mode = bool(getattr(request.app.state, "safe_mode", False))
 
-    if adapter is None:
+    if safe_mode or adapter is None:
         return Health(
             status=Status.degraded,
             version=__version__,
             component="hemisphere-driver",
+            safeMode=safe_mode,
             details={"adapter_error": adapter_error},
         )
 
@@ -31,4 +33,5 @@ async def healthz(request: Request) -> Health:
         status=Status.ok,
         version=__version__,
         component="hemisphere-driver",
+        safeMode=False,
     )

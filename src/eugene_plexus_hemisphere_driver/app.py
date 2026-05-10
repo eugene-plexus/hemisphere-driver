@@ -52,8 +52,21 @@ def build_engine(store: ConfigStore) -> HemisphereEngine:
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
     store = ConfigStore(settings.config_file)
-    store.load()
+    if settings.safe_mode:
+        # Safe mode: skip the on-disk config entirely, leaving the store
+        # populated with built-in defaults. PATCH /v1/config still writes
+        # to disk, so the operator's repair survives the next boot. No
+        # engine is constructed — /v1/generate reports degraded.
+        log.warning(
+            "starting in SAFE MODE (EUGENE_PLEXUS_HD_SAFE_MODE=1); ignoring "
+            "%s and running on defaults. Fix config via /v1/config, then "
+            "restart without the env var.",
+            settings.config_file,
+        )
+    else:
+        store.load()
     app.state.config_store = store
+    app.state.safe_mode = settings.safe_mode
 
     # Engine construction can fail (missing API key, unknown provider,
     # bad binary path, etc). The driver MUST come up anyway so its
@@ -62,19 +75,26 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # OpenClaw failure mode this project exists to avoid. We record the
     # error on app.state and let /v1/generate surface it as a 503 until
     # the config is fixed and the driver restarted.
-    try:
-        engine = build_engine(store)
-        app.state.adapter = engine  # historical name; routes still read `app.state.adapter`
-        app.state.adapter_error = None
-        log.info("engine ready: backend=%s", engine.backend_kind.value)
-    except Exception as e:
+    if settings.safe_mode:
+        # No engine in safe mode — defaults have no provider set, so
+        # `build_engine` would raise "no provider". Skip cleanly with
+        # an explicit safe-mode marker on app.state.
         app.state.adapter = None
-        app.state.adapter_error = str(e)
-        log.error(
-            "engine initialization failed (%s); driver running in degraded "
-            "mode — fix config via /v1/config and restart",
-            e,
-        )
+        app.state.adapter_error = "running in safe mode"
+    else:
+        try:
+            engine = build_engine(store)
+            app.state.adapter = engine  # historical name; routes still read `app.state.adapter`
+            app.state.adapter_error = None
+            log.info("engine ready: backend=%s", engine.backend_kind.value)
+        except Exception as e:
+            app.state.adapter = None
+            app.state.adapter_error = str(e)
+            log.error(
+                "engine initialization failed (%s); driver running in degraded "
+                "mode — fix config via /v1/config and restart",
+                e,
+            )
 
     # Discover the engine's available models for the modelId dropdown
     # in the UI. Best-effort: an unreachable backend leaves the list
