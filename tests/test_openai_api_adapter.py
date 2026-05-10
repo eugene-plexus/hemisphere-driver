@@ -174,6 +174,52 @@ async def test_openai_adapter_uses_max_completion_tokens_against_openai() -> Non
 
 
 @respx.mock
+async def test_openai_adapter_forces_minimal_reasoning_effort_on_gpt5() -> None:
+    """gpt-5 supports `temperature` so it's allowed in the bicameral
+    pair, but it's still a reasoning model — Eugene Plexus IS the
+    synthesis layer, so we force reasoning_effort=minimal to keep the
+    duplicated reasoning as cheap as possible."""
+    route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json=OK_BODY)
+    )
+    adapter = OpenAiApiAdapter(api_key="sk-test", model_id="gpt-5")
+    await adapter.generate(_request())
+
+    import json as _json
+
+    payload = _json.loads(route.calls[0].request.read())
+    assert payload.get("reasoning_effort") == "minimal"
+
+
+@respx.mock
+async def test_openai_adapter_omits_reasoning_effort_for_non_reasoning_models() -> None:
+    """gpt-4o is not a reasoning model — leave the reasoning_effort
+    parameter off the payload entirely so OpenAI uses defaults."""
+    route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json=OK_BODY)
+    )
+    adapter = OpenAiApiAdapter(api_key="sk-test", model_id="gpt-4o")
+    await adapter.generate(_request())
+
+    import json as _json
+
+    payload = _json.loads(route.calls[0].request.read())
+    assert "reasoning_effort" not in payload
+
+
+@pytest.mark.parametrize("model_id", ["o1", "o1-mini", "o1-preview", "o3", "o3-mini"])
+def test_openai_adapter_rejects_models_that_dont_support_temperature(
+    model_id: str,
+) -> None:
+    """Eugene Plexus relies on temperature as the per-pass divergence
+    knob. The o-series outright rejects temperature, so the adapter
+    refuses to construct against one — driver lands in degraded mode
+    with the explanation."""
+    with pytest.raises(CliError, match="temperature"):
+        OpenAiApiAdapter(api_key="sk-test", model_id=model_id)
+
+
+@respx.mock
 async def test_openai_adapter_uses_legacy_max_tokens_against_self_hosted() -> None:
     """Self-hosted OpenAI-compatible servers (Ollama, vLLM, LM Studio)
     implement the older spec and only know `max_tokens`. Pin that the

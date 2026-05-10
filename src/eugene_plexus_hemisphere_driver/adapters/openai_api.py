@@ -23,6 +23,7 @@ from config (`openaiApiKey`, sensitive) with a fallback to the
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -37,6 +38,32 @@ from .._generated.models import (
     Usage,
 )
 from ._subprocess import CliError
+
+# Models that don't accept the `temperature` parameter at all (the OpenAI
+# o-series — o1, o3, and their *-mini / *-preview variants). Eugene Plexus
+# leans on temperature as the divergence knob between hemispheres in the
+# bicameral pair, and v0.2's NT system will modulate it per-pass; a model
+# that rejects it has no place in the loop. The adapter refuses to
+# construct against one of these, dropping the driver into degraded mode
+# with a clear message.
+_TEMPERATURE_UNSUPPORTED_PATTERN = re.compile(r"^o\d+(?:-[\w.]+)?$", re.IGNORECASE)
+
+# Models that accept the `reasoning_effort` parameter — currently the
+# gpt-5 family. These ARE allowed (they support temperature, so the
+# divergence story still works), but Eugene Plexus IS the synthesis
+# layer, so model-side reasoning duplicates work. When the operator
+# picks one anyway we force the lowest effort to keep the waste
+# minimal. gpt-5's valid values are `minimal | low | medium | high`.
+_REASONING_EFFORT_PATTERN = re.compile(r"^gpt-5(?:-[\w.]+)?$", re.IGNORECASE)
+_FORCED_REASONING_EFFORT = "minimal"
+
+
+def _model_rejects_temperature(model_id: str) -> bool:
+    return _TEMPERATURE_UNSUPPORTED_PATTERN.match(model_id) is not None
+
+
+def _model_accepts_reasoning_effort(model_id: str) -> bool:
+    return _REASONING_EFFORT_PATTERN.match(model_id) is not None
 
 _FINISH_REASON_MAP = {
     "stop": FinishReason.stop,
@@ -86,6 +113,17 @@ class OpenAiApiAdapter:
                 "openai_api adapter has no API key — set `openaiApiKey` in "
                 "config or export OPENAI_API_KEY."
             )
+        if _model_rejects_temperature(model_id):
+            raise CliError(
+                f"openai_api: model {model_id!r} is a pure reasoning model "
+                "(OpenAI's o-series) that doesn't accept the `temperature` "
+                "parameter. Eugene Plexus uses temperature as the divergence "
+                "knob between hemispheres, and v0.2's NT system modulates it "
+                "per-pass — a model that rejects temperature has no place in "
+                "the bicameral loop. Pick a non-reasoning chat model "
+                "(gpt-4o, gpt-4-turbo, gpt-4.1) or gpt-5 (which accepts "
+                "temperature; reasoning effort is forced to 'minimal' there)."
+            )
         self._api_key = resolved_key
         self._base_url = base_url.rstrip("/")
         self._model_id = model_id
@@ -102,6 +140,11 @@ class OpenAiApiAdapter:
             payload["temperature"] = float(request.temperature)
         if request.stop:
             payload["stop"] = list(request.stop)
+        if _model_accepts_reasoning_effort(self._model_id):
+            # Eugene Plexus IS the synthesis layer; reasoning models inside
+            # the bicameral pair duplicate that work. Force the lowest
+            # effort to keep the duplication as cheap as possible.
+            payload["reasoning_effort"] = _FORCED_REASONING_EFFORT
 
         async with httpx.AsyncClient(
             base_url=self._base_url,
