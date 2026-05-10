@@ -48,3 +48,23 @@ class HemisphereAdapter(Protocol):
     async def stream(self, request: GenerateRequest) -> AsyncIterator[StreamChunk]:
         """Streamed generation. Yields chunks ending with one where `done` is True."""
         ...
+
+    async def list_models(self) -> list[str]:
+        """Return the model IDs this backend offers, post-policy-filter.
+
+        Used by `GET /v1/config/schema` to populate the `modelId` field's
+        `enumValues` so the UI can render a dropdown instead of a free-text
+        input. The list is **already filtered** for Eugene Plexus
+        compatibility (no temperature-uncontrollable models, etc.) — the
+        UI takes it as authoritative.
+
+        For adapters that talk to a discoverable API (openai_api), this
+        SHOULD live-fetch from the backend. For CLI adapters where the
+        backend doesn't expose a list endpoint, return a hardcoded set
+        of known-good model IDs.
+
+        Failure is non-fatal: return `[]` if the backend can't be
+        reached. Callers fall back to a free-text input so the operator
+        can still type a model ID by hand.
+        """
+        ...

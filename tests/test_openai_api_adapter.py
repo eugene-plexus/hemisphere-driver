@@ -36,7 +36,7 @@ OK_BODY = {
     "id": "chatcmpl-abc",
     "object": "chat.completion",
     "created": 1234567890,
-    "model": "gpt-5",
+    "model": "gpt-4o",
     "choices": [
         {
             "index": 0,
@@ -57,14 +57,14 @@ async def test_openai_adapter_parses_chat_completion() -> None:
     route = respx.post("https://api.openai.com/v1/chat/completions").mock(
         return_value=httpx.Response(200, json=OK_BODY)
     )
-    adapter = OpenAiApiAdapter(api_key="sk-test", model_id="gpt-5", timeout_seconds=30.0)
+    adapter = OpenAiApiAdapter(api_key="sk-test", model_id="gpt-4o", timeout_seconds=30.0)
 
     response = await adapter.generate(_request(system="You are helpful."))
 
     assert response.content == "PING"
     assert response.finishReason == FinishReason.stop
     assert response.backend == BackendKind.openai_api
-    assert response.modelId == "gpt-5"
+    assert response.modelId == "gpt-4o"
     assert response.usage is not None
     assert response.usage.promptTokens == 12
     assert response.usage.completionTokens == 1
@@ -78,7 +78,7 @@ async def test_openai_adapter_parses_chat_completion() -> None:
     import json as _json
 
     parsed = _json.loads(payload)
-    assert parsed["model"] == "gpt-5"
+    assert parsed["model"] == "gpt-4o"
     assert parsed["messages"] == [
         {"role": "system", "content": "You are helpful."},
         {"role": "user", "content": "say PING"},
@@ -163,7 +163,7 @@ async def test_openai_adapter_uses_max_completion_tokens_against_openai() -> Non
     route = respx.post("https://api.openai.com/v1/chat/completions").mock(
         return_value=httpx.Response(200, json=OK_BODY)
     )
-    adapter = OpenAiApiAdapter(api_key="sk-test", model_id="gpt-5")
+    adapter = OpenAiApiAdapter(api_key="sk-test", model_id="gpt-4o")
     await adapter.generate(GenerateRequest(messages=[Message(role=Role.user, content="hi")], maxTokens=512))
 
     import json as _json
@@ -173,48 +173,32 @@ async def test_openai_adapter_uses_max_completion_tokens_against_openai() -> Non
     assert "max_tokens" not in payload  # legacy field must NOT be sent
 
 
-@respx.mock
-async def test_openai_adapter_forces_minimal_reasoning_effort_on_gpt5() -> None:
-    """gpt-5 supports `temperature` so it's allowed in the bicameral
-    pair, but it's still a reasoning model — Eugene Plexus IS the
-    synthesis layer, so we force reasoning_effort=minimal to keep the
-    duplicated reasoning as cheap as possible."""
-    route = respx.post("https://api.openai.com/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json=OK_BODY)
-    )
-    adapter = OpenAiApiAdapter(api_key="sk-test", model_id="gpt-5")
-    await adapter.generate(_request())
-
-    import json as _json
-
-    payload = _json.loads(route.calls[0].request.read())
-    assert payload.get("reasoning_effort") == "minimal"
-
-
-@respx.mock
-async def test_openai_adapter_omits_reasoning_effort_for_non_reasoning_models() -> None:
-    """gpt-4o is not a reasoning model — leave the reasoning_effort
-    parameter off the payload entirely so OpenAI uses defaults."""
-    route = respx.post("https://api.openai.com/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json=OK_BODY)
-    )
-    adapter = OpenAiApiAdapter(api_key="sk-test", model_id="gpt-4o")
-    await adapter.generate(_request())
-
-    import json as _json
-
-    payload = _json.loads(route.calls[0].request.read())
-    assert "reasoning_effort" not in payload
-
-
-@pytest.mark.parametrize("model_id", ["o1", "o1-mini", "o1-preview", "o3", "o3-mini"])
-def test_openai_adapter_rejects_models_that_dont_support_temperature(
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        # o-series: reject temperature outright
+        "o1",
+        "o1-mini",
+        "o1-preview",
+        "o3",
+        "o3-mini",
+        # gpt-5: schema-accepts temperature but only allows the default
+        # value (1) — effectively non-tunable. Same architectural
+        # incompatibility, same rejection.
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-5-pro",
+    ],
+)
+def test_openai_adapter_rejects_models_without_controllable_temperature(
     model_id: str,
 ) -> None:
     """Eugene Plexus relies on temperature as the per-pass divergence
-    knob. The o-series outright rejects temperature, so the adapter
-    refuses to construct against one — driver lands in degraded mode
-    with the explanation."""
+    knob. Models that either reject the parameter (o-series) or only
+    accept its default value (gpt-5 family) won't move with our
+    NT-modulated temperature in v0.2+, so the adapter refuses to
+    construct against one — driver lands in degraded mode with the
+    explanation."""
     with pytest.raises(CliError, match="temperature"):
         OpenAiApiAdapter(api_key="sk-test", model_id=model_id)
 
@@ -240,6 +224,80 @@ async def test_openai_adapter_uses_legacy_max_tokens_against_self_hosted() -> No
     payload = _json.loads(route.calls[0].request.read())
     assert payload.get("max_tokens") == 512
     assert "max_completion_tokens" not in payload
+
+
+# ---------------------------------------------------------------------------
+# list_models — live-fetched from /v1/models with our compatibility filter
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_openai_adapter_list_models_filters_temperature_uncontrollable() -> None:
+    """Live fetch returns the post-filter set: chat-plausible model IDs
+    that ALSO pass our temperature-controllability bar. Embeddings,
+    audio, image and the o-series / gpt-5 families are stripped."""
+    fake_catalog = {
+        "data": [
+            {"id": "gpt-4o", "object": "model"},
+            {"id": "gpt-4o-mini", "object": "model"},
+            {"id": "gpt-4.1", "object": "model"},
+            {"id": "gpt-4-turbo", "object": "model"},
+            {"id": "gpt-3.5-turbo", "object": "model"},
+            # Filtered: temperature-uncontrollable
+            {"id": "gpt-5", "object": "model"},
+            {"id": "gpt-5-mini", "object": "model"},
+            {"id": "o1", "object": "model"},
+            {"id": "o1-mini", "object": "model"},
+            {"id": "o3", "object": "model"},
+            # Filtered: not chat
+            {"id": "text-embedding-3-large", "object": "model"},
+            {"id": "dall-e-3", "object": "model"},
+            {"id": "whisper-1", "object": "model"},
+            {"id": "tts-1", "object": "model"},
+            {"id": "omni-moderation-latest", "object": "model"},
+            {"id": "babbage-002", "object": "model"},
+        ]
+    }
+    respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(200, json=fake_catalog)
+    )
+    adapter = OpenAiApiAdapter(api_key="sk-test", model_id="gpt-4o")
+
+    models = await adapter.list_models()
+
+    # Allowed: chat-plausible AND temperature-controllable.
+    assert "gpt-4o" in models
+    assert "gpt-4o-mini" in models
+    assert "gpt-4.1" in models
+    assert "gpt-4-turbo" in models
+    assert "gpt-3.5-turbo" in models
+    # Filtered: o-series and gpt-5 family.
+    assert "gpt-5" not in models
+    assert "gpt-5-mini" not in models
+    assert "o1" not in models
+    assert "o1-mini" not in models
+    assert "o3" not in models
+    # Filtered: non-chat.
+    assert "text-embedding-3-large" not in models
+    assert "dall-e-3" not in models
+    assert "whisper-1" not in models
+    assert "tts-1" not in models
+    assert "omni-moderation-latest" not in models
+    assert "babbage-002" not in models
+    # Sorted for stable rendering.
+    assert models == sorted(models)
+
+
+@respx.mock
+async def test_openai_adapter_list_models_returns_empty_on_transport_error() -> None:
+    """If the backend can't be reached, list_models returns an empty
+    list — the schema endpoint falls back to free-text input. Driver
+    stays up either way."""
+    respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(500, text="server exploded")
+    )
+    adapter = OpenAiApiAdapter(api_key="sk-test", model_id="gpt-4o")
+    assert await adapter.list_models() == []
 
 
 # ---------------------------------------------------------------------------

@@ -52,6 +52,22 @@ _STOP_REASON_MAP = {
     "max_tokens": FinishReason.length,
 }
 
+# Hardcoded list of known-good Claude models supported by the Claude
+# Code CLI. The CLI doesn't expose a `--list-models` so we can't
+# discover this live the way openai_api can. Update by hand when
+# Anthropic ships new chat models. Extended-thinking variants are
+# excluded — Eugene Plexus IS the synthesis layer (see o-series
+# rejection in openai_api).
+_KNOWN_CLAUDE_MODELS: list[str] = [
+    "claude-opus-4-7",
+    "claude-sonnet-4-7",
+    "claude-haiku-4-5",
+    "claude-opus-4",
+    "claude-sonnet-4",
+    "claude-3-5-sonnet-latest",
+    "claude-3-5-haiku-latest",
+]
+
 
 class ClaudeCodeCliAdapter:
     backend_kind = "claude_code_cli"
@@ -131,6 +147,12 @@ class ClaudeCodeCliAdapter:
         # ui not implemented). Wire it up when the consumer lands.
         raise NotImplementedError("ClaudeCodeCliAdapter.stream not implemented in v0.1")
         yield  # pragma: no cover
+
+    async def list_models(self) -> list[str]:
+        # Claude Code CLI doesn't expose a list endpoint — return a
+        # hardcoded set of currently-shipping chat models. All listed
+        # models support tunable temperature.
+        return list(_KNOWN_CLAUDE_MODELS)
 
     def _build_argv(self, *, system_prompt: str) -> list[str]:
         argv = [

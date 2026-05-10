@@ -398,6 +398,30 @@ async def test_codex_adapter_concatenates_multi_message_output(
     assert response.content == "Hello world"
 
 
+async def test_claude_adapter_list_models_returns_known_chat_models() -> None:
+    """The CLI doesn't expose a list endpoint, so we hardcode known
+    chat-tier Claude models. Pin the contract: list is non-empty,
+    every entry starts with `claude-`, and it includes the current
+    flagship model."""
+    adapter = ClaudeCodeCliAdapter()
+    models = await adapter.list_models()
+    assert models  # non-empty
+    assert all(m.startswith("claude-") for m in models)
+    assert "claude-opus-4-7" in models
+
+
+async def test_codex_adapter_list_models_excludes_temperature_uncontrollable() -> None:
+    """Codex CLI hardcodes a list too; verify it deliberately excludes
+    o-series and gpt-5 family — Eugene Plexus's hemisphere policy
+    applies regardless of which adapter is delivering the model."""
+    adapter = CodexCliAdapter()
+    models = await adapter.list_models()
+    assert models
+    assert "gpt-4o" in models
+    for forbidden in ("o1", "o1-mini", "o3", "gpt-5", "gpt-5-mini"):
+        assert forbidden not in models
+
+
 # ---------------------------------------------------------------------------
 # End-to-end against real binaries — opt-in via env var
 # ---------------------------------------------------------------------------

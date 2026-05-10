@@ -39,31 +39,75 @@ from .._generated.models import (
 )
 from ._subprocess import CliError
 
-# Models that don't accept the `temperature` parameter at all (the OpenAI
-# o-series — o1, o3, and their *-mini / *-preview variants). Eugene Plexus
-# leans on temperature as the divergence knob between hemispheres in the
-# bicameral pair, and v0.2's NT system will modulate it per-pass; a model
-# that rejects it has no place in the loop. The adapter refuses to
-# construct against one of these, dropping the driver into degraded mode
-# with a clear message.
-_TEMPERATURE_UNSUPPORTED_PATTERN = re.compile(r"^o\d+(?:-[\w.]+)?$", re.IGNORECASE)
-
-# Models that accept the `reasoning_effort` parameter — currently the
-# gpt-5 family. These ARE allowed (they support temperature, so the
-# divergence story still works), but Eugene Plexus IS the synthesis
-# layer, so model-side reasoning duplicates work. When the operator
-# picks one anyway we force the lowest effort to keep the waste
-# minimal. gpt-5's valid values are `minimal | low | medium | high`.
-_REASONING_EFFORT_PATTERN = re.compile(r"^gpt-5(?:-[\w.]+)?$", re.IGNORECASE)
-_FORCED_REASONING_EFFORT = "minimal"
-
-
-def _model_rejects_temperature(model_id: str) -> bool:
-    return _TEMPERATURE_UNSUPPORTED_PATTERN.match(model_id) is not None
+# Models that can't be used as a Eugene Plexus hemisphere because they
+# don't actually support a tunable `temperature`:
+#
+# - OpenAI o-series (o1, o3, and their *-mini / *-preview variants):
+#   reject the `temperature` parameter outright.
+# - gpt-5 family: schema accepts the parameter but only the default
+#   value (1) — any other value 400s with "Unsupported value:
+#   'temperature' does not support X with this model. Only the default
+#   (1) value is supported."
+#
+# Eugene Plexus uses temperature as the per-pass divergence knob
+# between hemispheres, and v0.2's NT system will modulate it per-pass
+# per-driver. A model that won't move with temperature has no place in
+# the loop. The adapter refuses to construct against one of these,
+# dropping the driver into degraded mode with a clear message.
+_TEMPERATURE_UNCONTROLLABLE_PATTERN = re.compile(
+    r"^(?:o\d+|gpt-5)(?:-[\w.]+)?$", re.IGNORECASE
+)
 
 
-def _model_accepts_reasoning_effort(model_id: str) -> bool:
-    return _REASONING_EFFORT_PATTERN.match(model_id) is not None
+def _model_rejects_temperature_control(model_id: str) -> bool:
+    return _TEMPERATURE_UNCONTROLLABLE_PATTERN.match(model_id) is not None
+
+
+# OpenAI's `/v1/models` returns every model on the account — embeddings,
+# image, audio, moderation, retired completion-only models, etc. — and
+# the API doesn't tag them by capability. Heuristic-filter to chat-likely
+# IDs so the dropdown isn't 80 entries of `text-embedding-3-large`.
+_NON_CHAT_PREFIXES = (
+    "text-embedding-",
+    "text-similarity-",
+    "text-search-",
+    "code-search-",
+    "dall-e-",
+    "whisper-",
+    "tts-",
+    "omni-moderation-",
+    "babbage",
+    "davinci",
+    "ada-",
+    "curie-",
+    "computer-use-",
+    "codex-",  # the standalone Codex models — different surface from `codex_cli`
+)
+
+_CHAT_MODEL_PREFIXES = (
+    "gpt-",
+    "chatgpt-",
+    "claude-",
+    "llama",
+    "mistral",
+    "qwen",
+    "deepseek",
+)
+
+
+def _is_plausible_chat_model(model_id: str) -> bool:
+    lowered = model_id.lower()
+    if lowered.startswith(_NON_CHAT_PREFIXES):
+        return False
+    if "embedding" in lowered or "moderation" in lowered:
+        return False
+    if "audio" in lowered or "realtime" in lowered or "transcribe" in lowered or "tts" in lowered:
+        return False
+    if "image" in lowered or "vision-preview" in lowered:
+        # Pure image-gen models. Vision-capable chat models (e.g. gpt-4o)
+        # don't carry "image" in the id, so they're unaffected.
+        return False
+    return lowered.startswith(_CHAT_MODEL_PREFIXES)
 
 _FINISH_REASON_MAP = {
     "stop": FinishReason.stop,
@@ -104,7 +148,7 @@ class OpenAiApiAdapter:
         *,
         api_key: str | None = None,
         base_url: str = "https://api.openai.com",
-        model_id: str = "gpt-5",
+        model_id: str = "gpt-4o",
         timeout_seconds: float = 120.0,
     ) -> None:
         resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
@@ -113,16 +157,18 @@ class OpenAiApiAdapter:
                 "openai_api adapter has no API key — set `openaiApiKey` in "
                 "config or export OPENAI_API_KEY."
             )
-        if _model_rejects_temperature(model_id):
+        if _model_rejects_temperature_control(model_id):
             raise CliError(
-                f"openai_api: model {model_id!r} is a pure reasoning model "
-                "(OpenAI's o-series) that doesn't accept the `temperature` "
-                "parameter. Eugene Plexus uses temperature as the divergence "
-                "knob between hemispheres, and v0.2's NT system modulates it "
-                "per-pass — a model that rejects temperature has no place in "
-                "the bicameral loop. Pick a non-reasoning chat model "
-                "(gpt-4o, gpt-4-turbo, gpt-4.1) or gpt-5 (which accepts "
-                "temperature; reasoning effort is forced to 'minimal' there)."
+                f"openai_api: model {model_id!r} doesn't support a tunable "
+                "`temperature` parameter (OpenAI's o-series rejects it "
+                "outright; the gpt-5 family schema-accepts it but only the "
+                "default value of 1 — any other value 400s). Eugene Plexus "
+                "uses temperature as the per-pass divergence knob between "
+                "hemispheres, and v0.2's NT system modulates it per-pass "
+                "per-driver — a model that won't move with temperature has "
+                "no place in the bicameral loop. Pick a non-reasoning chat "
+                "model with controllable temperature: gpt-4o, gpt-4o-mini, "
+                "gpt-4.1, gpt-4-turbo."
             )
         self._api_key = resolved_key
         self._base_url = base_url.rstrip("/")
@@ -140,11 +186,6 @@ class OpenAiApiAdapter:
             payload["temperature"] = float(request.temperature)
         if request.stop:
             payload["stop"] = list(request.stop)
-        if _model_accepts_reasoning_effort(self._model_id):
-            # Eugene Plexus IS the synthesis layer; reasoning models inside
-            # the bicameral pair duplicate that work. Force the lowest
-            # effort to keep the duplication as cheap as possible.
-            payload["reasoning_effort"] = _FORCED_REASONING_EFFORT
 
         async with httpx.AsyncClient(
             base_url=self._base_url,
@@ -199,6 +240,56 @@ class OpenAiApiAdapter:
         # but no consumer of hemisphere-driver streaming exists yet.
         raise NotImplementedError("OpenAiApiAdapter.stream not implemented in v0.1")
         yield  # pragma: no cover
+
+    async def list_models(self) -> list[str]:
+        """Live-fetch the model catalog from the configured base URL.
+
+        OpenAI proper and most OpenAI-compatible providers expose
+        `GET /v1/models` returning `{"data": [{"id": "<model>", ...}]}`.
+        We filter out:
+
+        - non-chat models (embeddings, dall-e, whisper, tts, moderation,
+          codex-only, audio) — heuristic by id prefix / substring
+        - models we'd reject at adapter construction anyway
+          (`_TEMPERATURE_UNCONTROLLABLE_PATTERN`)
+
+        Returns `[]` on transport / parse failure so the schema endpoint
+        can fall back to free-text input. Driver stays up either way.
+        """
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=httpx.Timeout(15.0, connect=5.0),
+            ) as client:
+                response = await client.get(
+                    "/v1/models",
+                    headers={
+                        "Authorization": f"Bearer {self._api_key}",
+                        "Accept": "application/json",
+                    },
+                )
+            if response.status_code >= 400:
+                return []
+            body = response.json()
+        except (httpx.HTTPError, ValueError):
+            return []
+        data = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(data, list):
+            return []
+        ids: list[str] = []
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            mid = entry.get("id")
+            if not isinstance(mid, str):
+                continue
+            if not _is_plausible_chat_model(mid):
+                continue
+            if _model_rejects_temperature_control(mid):
+                continue
+            ids.append(mid)
+        ids.sort()
+        return ids
 
 
 def _to_openai_messages(messages: list[Any]) -> list[dict[str, str]]:

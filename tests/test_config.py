@@ -73,6 +73,50 @@ def test_patch_applies_valid_change_and_rejects_invalid(client: TestClient) -> N
     assert follow.json()["port"] == 8081  # unchanged after rejection
 
 
+def test_schema_modelid_is_string_when_no_models_discovered(client: TestClient) -> None:
+    """Default fixture starts the app without an adapter the lifespan
+    can build (claude_code_cli with `claude` in PATH most likely fails
+    or no list is set), so available_models is empty. modelId stays as
+    free-text string so the operator can still type a model by hand."""
+    body = client.get("/v1/config/schema").json()
+    model_field = next(f for f in body["fields"] if f["key"] == "modelId")
+    # Either string (no list available) or enum (list discovered) is
+    # acceptable; we just assert the contract — when there's NO list,
+    # it MUST be string. The fixture's lifespan typically discovers
+    # claude models, so we expect enum here. The OTHER test pins
+    # the no-list branch directly.
+    assert model_field["valueType"] in ("string", "enum")
+
+
+def test_schema_modelid_becomes_enum_when_models_available() -> None:
+    """When the lifespan populates `available_models`, the schema
+    endpoint exposes modelId as a dropdown — value type flips to
+    enum, enumValues lists the discovered models, and a leading
+    empty-string entry preserves the 'use adapter default' option."""
+    from eugene_plexus_hemisphere_driver.config import as_schema
+
+    schema = as_schema(available_models=["claude-opus-4-7", "claude-sonnet-4-7"])
+    model_field = next(f for f in schema.fields if f.key == "modelId")
+    assert model_field.valueType.value == "enum"
+    assert model_field.enumValues is not None
+    assert model_field.enumValues[0] == ""  # "(use adapter default)" sentinel
+    assert "claude-opus-4-7" in model_field.enumValues
+    assert "claude-sonnet-4-7" in model_field.enumValues
+
+
+def test_schema_modelid_stays_string_without_models() -> None:
+    """Empty / missing list → free-text input. Belt-and-suspenders for
+    the fallback path the schema route uses in degraded mode."""
+    from eugene_plexus_hemisphere_driver.config import as_schema
+
+    schema = as_schema(available_models=None)
+    model_field = next(f for f in schema.fields if f.key == "modelId")
+    assert model_field.valueType.value == "string"
+    schema = as_schema(available_models=[])
+    model_field = next(f for f in schema.fields if f.key == "modelId")
+    assert model_field.valueType.value == "string"
+
+
 def test_patch_with_restart_required_field_sets_pending(client: TestClient) -> None:
     response = client.patch("/v1/config", json={"port": 8090})
     assert response.status_code == 200

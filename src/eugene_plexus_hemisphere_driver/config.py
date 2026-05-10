@@ -201,11 +201,41 @@ FIELDS: list[ConfigField] = [
 _FIELDS_BY_KEY: dict[str, ConfigField] = {f.key: f for f in FIELDS}
 
 
-def as_schema() -> ConfigSchema:
+def as_schema(*, available_models: list[str] | None = None) -> ConfigSchema:
+    """Return the driver's schema, with `modelId` upgraded to an enum
+    dropdown when the caller supplies a discovered model list.
+
+    The list comes from the adapter's `list_models()` (live for
+    openai_api, hardcoded for the CLIs) and arrives at the schema
+    endpoint via `app.state.available_models`. When it's missing or
+    empty (degraded mode, unreachable upstream, etc.), `modelId`
+    stays as a free-text `string` input so the operator can still
+    type a value by hand.
+    """
+    fields = list(FIELDS)
+    if available_models:
+        fields = [
+            _with_model_dropdown(f, available_models) if f.key == "modelId" else f
+            for f in fields
+        ]
     return ConfigSchema(
         component="hemisphere-driver",
-        fields=FIELDS,
+        fields=fields,
         categories=CATEGORY_LABELS,
+    )
+
+
+def _with_model_dropdown(model_field: ConfigField, models: list[str]) -> ConfigField:
+    """Return a copy of `modelId` re-typed as an enum with the given
+    models as `enumValues`. An empty-string entry is prepended so the
+    UI can offer "(use adapter default)" — preserving the current
+    behavior where leaving modelId unset falls back to the adapter's
+    built-in default model."""
+    return model_field.model_copy(
+        update={
+            "valueType": ConfigValueType.enum,
+            "enumValues": ["", *models],
+        }
     )
 
 

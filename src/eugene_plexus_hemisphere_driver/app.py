@@ -54,7 +54,7 @@ def build_adapter_with(get: Callable[[str], Any]) -> _Adapter:
         return OpenAiApiAdapter(
             api_key=str(get("openaiApiKey") or "") or None,
             base_url=str(get("openaiBaseUrl") or "https://api.openai.com"),
-            model_id=model_id or "gpt-5",
+            model_id=model_id or "gpt-4o",
             timeout_seconds=timeout,
         )
     raise ValueError(
@@ -93,6 +93,23 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             "mode — fix config via /v1/config and restart",
             e,
         )
+
+    # Discover the adapter's available models for the modelId dropdown
+    # in the UI. Best-effort: an unreachable backend (e.g. OpenAI down)
+    # leaves the list empty and the schema falls back to free-text input.
+    # Failure here is NEVER fatal — the driver itself is otherwise up.
+    app.state.available_models = []
+    if app.state.adapter is not None:
+        try:
+            models = await app.state.adapter.list_models()
+            app.state.available_models = list(models)
+            log.info(
+                "discovered %d models from %s",
+                len(app.state.available_models),
+                app.state.adapter.backend_kind,
+            )
+        except Exception as e:
+            log.warning("list_models failed for %s: %s", app.state.adapter.backend_kind, e)
 
     yield
 

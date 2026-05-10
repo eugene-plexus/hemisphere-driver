@@ -57,6 +57,20 @@ from .._generated.models import (
 from ._prompt import messages_to_prompt
 from ._subprocess import CliError, run_cli
 
+# Models that Codex CLI is known to surface to the user. The CLI itself
+# decides which model to call based on its own config and the active
+# ChatGPT subscription tier — our `modelId` field is informational only,
+# not directly bound to the backend call. Keep the list short and
+# deliberately exclude reasoning models that wouldn't pass our
+# temperature-controllability bar (see openai_api).
+_KNOWN_CODEX_MODELS: list[str] = [
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4-turbo",
+]
+
 
 class CodexCliAdapter:
     backend_kind = "codex_cli"
@@ -130,6 +144,12 @@ class CodexCliAdapter:
         # through end-to-end waits on a real consumer (orchestrator + ui).
         raise NotImplementedError("CodexCliAdapter.stream not implemented in v0.1")
         yield  # pragma: no cover
+
+    async def list_models(self) -> list[str]:
+        # Codex CLI doesn't expose a list endpoint. Return a hardcoded
+        # set; note that `modelId` is informational here — the CLI's
+        # actual model selection is driven by Codex's own config.
+        return list(_KNOWN_CODEX_MODELS)
 
     def _build_argv(self, prompt: str) -> list[str]:
         argv = [
