@@ -35,7 +35,6 @@ CATEGORY_LABELS: dict[str, str] = {
     "adapter": "Backend Adapter",
     "network": "Network",
     "logging": "Logging",
-    "generation": "Generation Defaults",
 }
 
 # Schema for hemisphere-driver's config surface. The order here is the
@@ -145,33 +144,14 @@ FIELDS: list[ConfigField] = [
         requiresRestart=True,
     ),
     ConfigField(
-        key="defaultMaxTokens",
-        label="Default Max Tokens",
-        description="Maximum output tokens used when the request omits the field.",
-        category="generation",
-        valueType=ConfigValueType.integer,
-        default=2048,
-        minimum=1,
-    ),
-    ConfigField(
-        key="defaultTemperature",
-        label="Default Temperature",
-        description="Sampling temperature used when the request omits the field.",
-        category="generation",
-        valueType=ConfigValueType.number,
-        default=0.7,
-        minimum=0.0,
-        maximum=2.0,
-    ),
-    ConfigField(
         key="requestTimeoutSeconds",
         label="Request Timeout",
         description=(
-            "Maximum seconds the driver will wait for one CLI invocation "
-            "before killing the subprocess and returning an error. Baked into "
-            "the adapter at startup; restart required."
+            "Maximum seconds the driver will wait for one backend call "
+            "(HTTP request or CLI invocation) before aborting and returning "
+            "an error. Baked into the adapter at startup; restart required."
         ),
-        category="generation",
+        category="network",
         valueType=ConfigValueType.duration,
         default=120,
         minimum=5,
@@ -179,6 +159,14 @@ FIELDS: list[ConfigField] = [
         requiresRestart=True,
     ),
 ]
+# NOTE on what's NOT in this schema:
+# Temperature, max-tokens, stop sequences and other parameters that alter
+# LLM output are owned by the *caller* (the orchestrator) and arrive on
+# every `GenerateRequest`. The driver applies what it's given and never
+# substitutes a local default. In v0.2+ the orchestrator's NT system will
+# modulate these per-request — placing defaults here would make that
+# layering invisible and a future NT signal trivially overridable from a
+# config file.
 
 _FIELDS_BY_KEY: dict[str, ConfigField] = {f.key: f for f in FIELDS}
 

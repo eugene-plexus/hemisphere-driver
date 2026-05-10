@@ -33,8 +33,6 @@ modelId: gpt-5
 openaiBaseUrl: https://api.openai.com
 port: 8081
 logLevel: INFO
-defaultMaxTokens: 2048
-defaultTemperature: 0.7
 requestTimeoutSeconds: 120
 """,
         encoding="utf-8",
