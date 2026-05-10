@@ -55,7 +55,14 @@ from ._subprocess import CliError
 # the loop. The adapter refuses to construct against one of these,
 # dropping the driver into degraded mode with a clear message.
 _TEMPERATURE_UNCONTROLLABLE_PATTERN = re.compile(
-    r"^(?:o\d+|gpt-5)(?:-[\w.]+)?$", re.IGNORECASE
+    # Prefix-anchored: matches anything in the gpt-5 family
+    # (gpt-5, gpt-5-mini, gpt-5.1, gpt-5.5-pro-2026-04-23, gpt-5.1-codex, …)
+    # or the o-series (o1, o3, o1-preview-2024-09, …). The trailing
+    # `(?:[-.]|$)` insists the match ends at a version separator or
+    # end-of-string so we don't accidentally hit hypothetical
+    # `gpt-50` / `gpt-5o` style names that aren't actually 5.x.
+    r"^(?:o\d+|gpt-5)(?:[-.]|$)",
+    re.IGNORECASE,
 )
 
 

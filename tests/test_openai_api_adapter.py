@@ -182,12 +182,21 @@ async def test_openai_adapter_uses_max_completion_tokens_against_openai() -> Non
         "o1-preview",
         "o3",
         "o3-mini",
-        # gpt-5: schema-accepts temperature but only allows the default
-        # value (1) — effectively non-tunable. Same architectural
-        # incompatibility, same rejection.
+        # gpt-5 family — schema-accepts temperature but only allows the
+        # default value (1). Both the simple names and the dated /
+        # variant suffixes OpenAI's /v1/models actually returns must
+        # all be rejected at construction.
         "gpt-5",
         "gpt-5-mini",
         "gpt-5-pro",
+        "gpt-5.1",
+        "gpt-5.2",
+        "gpt-5.1-codex",
+        "gpt-5.5-pro-2026-04-23",
+        "gpt-5-2025-08-07",
+        "gpt-5-chat-latest",
+        "gpt-5-mini-2025-08-07",
+        "gpt-5-nano-2025-08-07",
     ],
 )
 def test_openai_adapter_rejects_models_without_controllable_temperature(
@@ -243,9 +252,16 @@ async def test_openai_adapter_list_models_filters_temperature_uncontrollable() -
             {"id": "gpt-4.1", "object": "model"},
             {"id": "gpt-4-turbo", "object": "model"},
             {"id": "gpt-3.5-turbo", "object": "model"},
-            # Filtered: temperature-uncontrollable
+            # Filtered: temperature-uncontrollable. OpenAI's /v1/models
+            # actually returns these dated and dotted variants in real
+            # life — pin that the pattern catches all of them.
             {"id": "gpt-5", "object": "model"},
             {"id": "gpt-5-mini", "object": "model"},
+            {"id": "gpt-5-2025-08-07", "object": "model"},
+            {"id": "gpt-5-chat-latest", "object": "model"},
+            {"id": "gpt-5.1", "object": "model"},
+            {"id": "gpt-5.2-pro", "object": "model"},
+            {"id": "gpt-5.5-pro-2026-04-23", "object": "model"},
             {"id": "o1", "object": "model"},
             {"id": "o1-mini", "object": "model"},
             {"id": "o3", "object": "model"},
@@ -271,12 +287,21 @@ async def test_openai_adapter_list_models_filters_temperature_uncontrollable() -
     assert "gpt-4.1" in models
     assert "gpt-4-turbo" in models
     assert "gpt-3.5-turbo" in models
-    # Filtered: o-series and gpt-5 family.
-    assert "gpt-5" not in models
-    assert "gpt-5-mini" not in models
-    assert "o1" not in models
-    assert "o1-mini" not in models
-    assert "o3" not in models
+    # Filtered: o-series and gpt-5 family (including the dotted /
+    # dated variants OpenAI's /v1/models actually returns).
+    for forbidden in (
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-5-2025-08-07",
+        "gpt-5-chat-latest",
+        "gpt-5.1",
+        "gpt-5.2-pro",
+        "gpt-5.5-pro-2026-04-23",
+        "o1",
+        "o1-mini",
+        "o3",
+    ):
+        assert forbidden not in models
     # Filtered: non-chat.
     assert "text-embedding-3-large" not in models
     assert "dall-e-3" not in models
