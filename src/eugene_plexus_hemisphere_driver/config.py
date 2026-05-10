@@ -43,7 +43,17 @@ FIELDS: list[ConfigField] = [
     ConfigField(
         key="adapter",
         label="Backend",
-        description="Which model backend this hemisphere wraps.",
+        description=(
+            "Which kind of LLM this driver talks to. "
+            "`claude_code_cli` shells out to your locally-installed Claude "
+            "Code CLI (uses your Claude Pro/Max subscription — no API "
+            "billing). `codex_cli` shells out to OpenAI's Codex CLI "
+            "(same idea, ChatGPT subscription). `openai_api` calls any "
+            "OpenAI-compatible HTTP API directly with an API key — "
+            "OpenAI itself, or self-hosted servers like Ollama, vLLM, "
+            "or LM Studio. Switching this changes which other fields "
+            "below are relevant."
+        ),
         category="adapter",
         valueType=ConfigValueType.enum,
         default="claude_code_cli",
@@ -55,8 +65,11 @@ FIELDS: list[ConfigField] = [
         key="modelId",
         label="Model ID",
         description=(
-            'Backend-specific model identifier (e.g. "claude-opus-4-7"). '
-            "Optional — adapter uses its built-in default if unset."
+            "Specific model name to ask the backend for (e.g. "
+            "\"claude-opus-4-7\", \"gpt-5\", \"llama3.1:70b\"). Leave "
+            "blank to use the adapter's built-in default — fine for "
+            "personal-subscription CLIs, but you'll usually want to pin "
+            "a specific model when calling an API."
         ),
         category="adapter",
         valueType=ConfigValueType.string,
@@ -65,7 +78,12 @@ FIELDS: list[ConfigField] = [
     ConfigField(
         key="claudeCodeCliPath",
         label="Claude Code CLI binary",
-        description="Path to the `claude` executable. Used when adapter is claude_code_cli.",
+        description=(
+            "Where to find the `claude` command. Just `claude` works if "
+            "the binary is on your `PATH`; otherwise give the full path "
+            "(e.g. `/usr/local/bin/claude` or `C:\\Users\\you\\AppData"
+            "\\Local\\claude\\claude.exe`)."
+        ),
         category="adapter",
         valueType=ConfigValueType.file_path,
         default="claude",
@@ -75,7 +93,10 @@ FIELDS: list[ConfigField] = [
     ConfigField(
         key="codexCliPath",
         label="Codex CLI binary",
-        description="Path to the `codex` executable. Used when adapter is codex_cli.",
+        description=(
+            "Where to find the `codex` command. Just `codex` works if "
+            "the binary is on your `PATH`; otherwise give the full path."
+        ),
         category="adapter",
         valueType=ConfigValueType.file_path,
         default="codex",
@@ -86,8 +107,13 @@ FIELDS: list[ConfigField] = [
         key="openaiApiKey",
         label="OpenAI API key",
         description=(
-            "API key sent as `Authorization: Bearer ...`. Used when adapter is "
-            "openai_api. Falls back to the OPENAI_API_KEY env var when unset."
+            "Secret key sent as the `Authorization: Bearer ...` header on "
+            "every API call. Get one from the provider you're using "
+            "(OpenAI, Groq, Together, your self-hosted server, etc.). "
+            "If you leave this blank, the driver will fall back to the "
+            "`OPENAI_API_KEY` environment variable in the shell that "
+            "started it. Stored on disk in plain text in v0.1; "
+            "at-rest encryption is on the v0.2 list."
         ),
         category="adapter",
         valueType=ConfigValueType.secret,
@@ -99,9 +125,13 @@ FIELDS: list[ConfigField] = [
         key="openaiBaseUrl",
         label="OpenAI base URL",
         description=(
-            "Base URL of the OpenAI-compatible HTTP API. Default targets OpenAI; "
-            "override for OpenAI-compatible providers (Together, Groq, MiniMax, "
-            "vLLM, LM Studio, etc)."
+            "Where to send the API calls. The default points at OpenAI's "
+            "servers. Change it to use any OpenAI-compatible provider — "
+            "for example: `https://api.groq.com/openai` for Groq, "
+            "`https://api.together.xyz` for Together, "
+            "`http://127.0.0.1:11434` for a local Ollama, "
+            "`http://127.0.0.1:8000` for a local vLLM. The "
+            "`/v1/chat/completions` path is appended automatically."
         ),
         category="adapter",
         valueType=ConfigValueType.url,
@@ -111,8 +141,14 @@ FIELDS: list[ConfigField] = [
     ),
     ConfigField(
         key="port",
-        label="HTTP Port",
-        description="Port to listen on.",
+        label="HTTP port",
+        description=(
+            "Port the orchestrator (or any other client) connects to "
+            "*this driver* on. The driver listens on it; nothing outside "
+            "this process. v0.1 default leaves the canonical bicameral "
+            "pair on 8081 (left) and 8082 (right). Change only if those "
+            "are taken on your machine."
+        ),
         category="network",
         valueType=ConfigValueType.integer,
         default=8081,
@@ -122,10 +158,12 @@ FIELDS: list[ConfigField] = [
     ),
     ConfigField(
         key="logLevel",
-        label="Log Level",
+        label="Log level",
         description=(
-            "Logging verbosity. Read by uvicorn at startup; restart required "
-            "for the new level to take effect."
+            "How chatty the driver's terminal output is. `DEBUG` prints "
+            "every backend call (useful when something's broken); "
+            "`INFO` is the normal operating level; `WARNING` and "
+            "`ERROR` go progressively quieter."
         ),
         category="logging",
         valueType=ConfigValueType.enum,
@@ -135,11 +173,13 @@ FIELDS: list[ConfigField] = [
     ),
     ConfigField(
         key="requestTimeoutSeconds",
-        label="Request Timeout",
+        label="Backend timeout",
         description=(
-            "Maximum seconds the driver will wait for one backend call "
-            "(HTTP request or CLI invocation) before aborting and returning "
-            "an error. Baked into the adapter at startup; restart required."
+            "How long the driver will wait on a single LLM call before "
+            "giving up and returning an error. Long-running CLI "
+            "invocations and large reasoning models can take a while; "
+            "120s is the v0.1 default. Bump it if you see timeouts on "
+            "complex prompts."
         ),
         category="network",
         valueType=ConfigValueType.duration,
