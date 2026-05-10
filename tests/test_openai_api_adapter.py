@@ -154,6 +154,48 @@ def test_openai_adapter_falls_back_to_env_var(monkeypatch: pytest.MonkeyPatch) -
     assert adapter is not None  # constructor accepts the env-var key without raising
 
 
+@respx.mock
+async def test_openai_adapter_uses_max_completion_tokens_against_openai() -> None:
+    """OpenAI's chat-completions API rejects `max_tokens` for newer
+    models (gpt-5, o1, o3, ...) — it requires `max_completion_tokens`.
+    Pin that the adapter sends the new field name when the base URL
+    points at OpenAI proper."""
+    route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json=OK_BODY)
+    )
+    adapter = OpenAiApiAdapter(api_key="sk-test", model_id="gpt-5")
+    await adapter.generate(GenerateRequest(messages=[Message(role=Role.user, content="hi")], maxTokens=512))
+
+    import json as _json
+
+    payload = _json.loads(route.calls[0].request.read())
+    assert payload.get("max_completion_tokens") == 512
+    assert "max_tokens" not in payload  # legacy field must NOT be sent
+
+
+@respx.mock
+async def test_openai_adapter_uses_legacy_max_tokens_against_self_hosted() -> None:
+    """Self-hosted OpenAI-compatible servers (Ollama, vLLM, LM Studio)
+    implement the older spec and only know `max_tokens`. Pin that the
+    adapter sends the legacy field name when the base URL doesn't
+    point at OpenAI proper."""
+    route = respx.post("http://127.0.0.1:11434/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json=OK_BODY)
+    )
+    adapter = OpenAiApiAdapter(
+        api_key="sk-ollama-stub",
+        base_url="http://127.0.0.1:11434",
+        model_id="llama3.1:70b",
+    )
+    await adapter.generate(GenerateRequest(messages=[Message(role=Role.user, content="hi")], maxTokens=512))
+
+    import json as _json
+
+    payload = _json.loads(route.calls[0].request.read())
+    assert payload.get("max_tokens") == 512
+    assert "max_completion_tokens" not in payload
+
+
 # ---------------------------------------------------------------------------
 # Live test — opt-in via env var (uses real OpenAI quota)
 # ---------------------------------------------------------------------------

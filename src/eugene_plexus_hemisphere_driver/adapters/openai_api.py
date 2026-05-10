@@ -47,6 +47,28 @@ _FINISH_REASON_MAP = {
 }
 
 
+def _max_tokens_field_for(base_url: str) -> str:
+    """Pick the right output-cap field name for this base URL.
+
+    OpenAI's chat-completions API now requires `max_completion_tokens`
+    for newer models (gpt-5, o1, o3, etc.) and explicitly rejects
+    `max_tokens`:
+
+        Unsupported parameter: 'max_tokens' is not supported with this
+        model. Use 'max_completion_tokens' instead.
+
+    Self-hosted OpenAI-compatible servers (Ollama, vLLM, LM Studio,
+    llama.cpp) implement the older spec and only understand the
+    legacy `max_tokens` field. Pick by base URL: openai.com → new
+    field; anything else → legacy. If you point this adapter at a
+    third-party provider that has also migrated to
+    `max_completion_tokens` and your requests start 400'ing on the
+    legacy field, log a bug — we'll either expand the URL match list
+    or move to a try/fallback strategy.
+    """
+    return "max_completion_tokens" if "openai.com" in base_url.lower() else "max_tokens"
+
+
 class OpenAiApiAdapter:
     backend_kind = "openai_api"
 
@@ -75,7 +97,7 @@ class OpenAiApiAdapter:
             "messages": _to_openai_messages(list(request.messages)),
         }
         if request.maxTokens is not None:
-            payload["max_tokens"] = request.maxTokens
+            payload[_max_tokens_field_for(self._base_url)] = request.maxTokens
         if request.temperature is not None:
             payload["temperature"] = float(request.temperature)
         if request.stop:
