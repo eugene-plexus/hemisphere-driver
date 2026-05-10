@@ -148,8 +148,13 @@ def _common_fields() -> list[ConfigField]:
 
 def _build_fields() -> list[ConfigField]:
     """Compose the full FIELDS list from the registry. Order:
-    provider -> modelId -> per-engine fields -> per-provider extras -> common."""
-    out: list[ConfigField] = [_provider_field(), _modelid_field()]
+    provider -> per-engine fields (API key, CLI paths) -> per-provider
+    extras (custom baseUrl) -> modelId -> common.
+
+    Why modelId comes last among adapter fields: most providers need a
+    valid API key (or local URL) before their model list is reachable,
+    so the UI shows credentials first, then the model picker."""
+    out: list[ConfigField] = [_provider_field()]
     seen: set[type] = set()
     for engine_cls in (ClaudeCodeCliEngine, CodexCliEngine, OpenAiCompatibleHttpEngine):
         if engine_cls in seen:
@@ -160,6 +165,7 @@ def _build_fields() -> list[ConfigField]:
             continue
         out.extend(engine_cls.field_specs(applicable_providers=applicable))
     out.extend(collect_extra_field_specs())
+    out.append(_modelid_field())
     out.extend(_common_fields())
     return out
 

@@ -13,6 +13,7 @@ from . import __version__
 from .config import ConfigStore
 from .engines.base import HemisphereEngine
 from .providers import get_provider
+from .routes import admin as admin_routes
 from .routes import config as config_routes
 from .routes import generate as generate_routes
 from .routes import health as health_routes
@@ -115,5 +116,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(info_routes.router)
     app.include_router(config_routes.router)
     app.include_router(generate_routes.router)
+    app.include_router(admin_routes.router)
 
     return app

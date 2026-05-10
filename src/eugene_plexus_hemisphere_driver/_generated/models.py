@@ -338,6 +338,34 @@ class ConfigTestResult(BaseModel):
     )
 
 
+class RestartResult(BaseModel):
+    """
+    Acknowledgement returned by `POST /v1/admin/restart`. The
+    component schedules its own process exit shortly after returning
+    this response (typically a few hundred ms — long enough for the
+    HTTP response to flush). The component does NOT bring itself
+    back up; a process supervisor (systemd, docker-compose, the
+    deploy launcher, etc.) is expected to relaunch it. In v0.1
+    personal-use deploys without a supervisor, the operator
+    relaunches manually.
+
+    """
+
+    scheduled: bool = Field(
+        ...,
+        description='True if the component accepted the restart and an exit is\nqueued. Always true in v0.1 — the endpoint has no reason to\nrefuse — but typed as a boolean so future versions can gate\non (e.g.) an in-flight long-running operation.\n',
+    )
+    delayMs: int = Field(
+        ...,
+        description='How long the component intends to wait before calling exit,\nmeasured from the moment the response is sent. Lets clients\ntime their UI ("restarting in 0.5s…") and decide when to\nstart polling `/healthz` for the relaunched process.\n',
+        ge=0,
+    )
+    message: str | None = Field(
+        None,
+        description='Optional human-readable note (e.g. "logs flushed, exiting\nnow"). UI may display this in the restart-progress dialog.\n',
+    )
+
+
 class FinishReason(StrEnum):
     stop = 'stop'
     length = 'length'
