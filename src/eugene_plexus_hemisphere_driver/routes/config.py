@@ -49,11 +49,11 @@ async def test_config(
     request: Request,
     body: ConfigTestRequest | None = None,
 ) -> ConfigTestResult:
-    """Build a temporary adapter from saved + override config and run a
+    """Build a temporary engine from saved + override config and run a
     minimal generate() round-trip. Override values are NOT persisted —
     PATCH /v1/config is still required to commit them."""
     # Imported lazily to avoid a routes -> app -> routes circular dep.
-    from ..app import build_adapter_with
+    from ..app import build_engine_with
 
     start = time.perf_counter()
     store: ConfigStore = request.app.state.config_store
@@ -65,26 +65,26 @@ async def test_config(
         return overrides[key] if key in overrides else store.get(key)
 
     try:
-        adapter = build_adapter_with(get)
+        engine = build_engine_with(get)
     except Exception as e:
         return ConfigTestResult(
             ok=False,
             component="hemisphere-driver",
             latencyMs=int((time.perf_counter() - start) * 1000),
-            error=f"adapter construction failed: {e}",
+            error=f"engine construction failed: {e}",
         )
 
     test_request = GenerateRequest(
         messages=[Message(role=Role.user, content="Reply with exactly: PING")],
     )
     try:
-        response = await adapter.generate(test_request)
+        response = await engine.generate(test_request)
     except Exception as e:
         return ConfigTestResult(
             ok=False,
             component="hemisphere-driver",
             latencyMs=int((time.perf_counter() - start) * 1000),
-            error=f"{adapter.backend_kind} generate failed: {e}",
+            error=f"{engine.backend_kind.value} generate failed: {e}",
         )
 
     elapsed_ms = int((time.perf_counter() - start) * 1000)
@@ -92,6 +92,6 @@ async def test_config(
         ok=True,
         component="hemisphere-driver",
         latencyMs=elapsed_ms,
-        summary=f"{adapter.backend_kind} responded in {response.latencyMs or 0}ms.",
+        summary=f"{engine.backend_kind.value} responded in {response.latencyMs or 0}ms.",
         sampleOutput=response.content[:200],
     )

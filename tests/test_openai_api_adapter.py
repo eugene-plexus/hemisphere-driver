@@ -20,8 +20,11 @@ from eugene_plexus_hemisphere_driver._generated.models import (
     Message,
     Role,
 )
-from eugene_plexus_hemisphere_driver.adapters._subprocess import CliError
-from eugene_plexus_hemisphere_driver.adapters.openai_api import OpenAiApiAdapter
+from eugene_plexus_hemisphere_driver.engines._subprocess import CliError
+from eugene_plexus_hemisphere_driver.engines.openai_compat_http import (
+    OPENAI_DENY_PATTERN,
+    OpenAiCompatibleHttpEngine,
+)
 
 
 def _request(prompt: str = "say PING", system: str | None = None) -> GenerateRequest:
@@ -57,7 +60,7 @@ async def test_openai_adapter_parses_chat_completion() -> None:
     route = respx.post("https://api.openai.com/v1/chat/completions").mock(
         return_value=httpx.Response(200, json=OK_BODY)
     )
-    adapter = OpenAiApiAdapter(api_key="sk-test", model_id="gpt-4o", timeout_seconds=30.0)
+    adapter = OpenAiCompatibleHttpEngine(api_key="sk-test", model_id="gpt-4o", timeout_seconds=30.0)
 
     response = await adapter.generate(_request(system="You are helpful."))
 
@@ -90,7 +93,7 @@ async def test_openai_adapter_uses_configured_base_url() -> None:
     route = respx.post("https://api.minimax.io/v1/chat/completions").mock(
         return_value=httpx.Response(200, json=OK_BODY)
     )
-    adapter = OpenAiApiAdapter(
+    adapter = OpenAiCompatibleHttpEngine(
         api_key="sk-test",
         base_url="https://api.minimax.io",
         model_id="abab6.5-chat",
@@ -104,7 +107,7 @@ async def test_openai_adapter_raises_on_http_error() -> None:
     respx.post("https://api.openai.com/v1/chat/completions").mock(
         return_value=httpx.Response(401, json={"error": {"message": "invalid key"}})
     )
-    adapter = OpenAiApiAdapter(api_key="sk-bad")
+    adapter = OpenAiCompatibleHttpEngine(api_key="sk-bad")
     with pytest.raises(CliError, match="401"):
         await adapter.generate(_request())
 
@@ -114,7 +117,7 @@ async def test_openai_adapter_raises_when_no_choices() -> None:
     respx.post("https://api.openai.com/v1/chat/completions").mock(
         return_value=httpx.Response(200, json={"choices": []})
     )
-    adapter = OpenAiApiAdapter(api_key="sk-test")
+    adapter = OpenAiCompatibleHttpEngine(api_key="sk-test")
     with pytest.raises(CliError, match="no choices"):
         await adapter.generate(_request())
 
@@ -124,7 +127,7 @@ async def test_openai_adapter_collapses_hemisphere_role_to_assistant() -> None:
     route = respx.post("https://api.openai.com/v1/chat/completions").mock(
         return_value=httpx.Response(200, json=OK_BODY)
     )
-    adapter = OpenAiApiAdapter(api_key="sk-test")
+    adapter = OpenAiCompatibleHttpEngine(api_key="sk-test")
     await adapter.generate(
         GenerateRequest(
             messages=[
@@ -145,12 +148,12 @@ async def test_openai_adapter_collapses_hemisphere_role_to_assistant() -> None:
 def test_openai_adapter_rejects_missing_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(CliError, match="no API key"):
-        OpenAiApiAdapter()
+        OpenAiCompatibleHttpEngine()
 
 
 def test_openai_adapter_falls_back_to_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env")
-    adapter = OpenAiApiAdapter()
+    adapter = OpenAiCompatibleHttpEngine()
     assert adapter is not None  # constructor accepts the env-var key without raising
 
 
@@ -163,7 +166,7 @@ async def test_openai_adapter_uses_max_completion_tokens_against_openai() -> Non
     route = respx.post("https://api.openai.com/v1/chat/completions").mock(
         return_value=httpx.Response(200, json=OK_BODY)
     )
-    adapter = OpenAiApiAdapter(api_key="sk-test", model_id="gpt-4o")
+    adapter = OpenAiCompatibleHttpEngine(api_key="sk-test", model_id="gpt-4o")
     await adapter.generate(GenerateRequest(messages=[Message(role=Role.user, content="hi")], maxTokens=512))
 
     import json as _json
@@ -209,7 +212,11 @@ def test_openai_adapter_rejects_models_without_controllable_temperature(
     construct against one — driver lands in degraded mode with the
     explanation."""
     with pytest.raises(CliError, match="temperature"):
-        OpenAiApiAdapter(api_key="sk-test", model_id=model_id)
+        OpenAiCompatibleHttpEngine(
+            api_key="sk-test",
+            model_id=model_id,
+            deny_pattern=OPENAI_DENY_PATTERN,
+        )
 
 
 @respx.mock
@@ -221,7 +228,7 @@ async def test_openai_adapter_uses_legacy_max_tokens_against_self_hosted() -> No
     route = respx.post("http://127.0.0.1:11434/v1/chat/completions").mock(
         return_value=httpx.Response(200, json=OK_BODY)
     )
-    adapter = OpenAiApiAdapter(
+    adapter = OpenAiCompatibleHttpEngine(
         api_key="sk-ollama-stub",
         base_url="http://127.0.0.1:11434",
         model_id="llama3.1:70b",
@@ -277,7 +284,11 @@ async def test_openai_adapter_list_models_filters_temperature_uncontrollable() -
     respx.get("https://api.openai.com/v1/models").mock(
         return_value=httpx.Response(200, json=fake_catalog)
     )
-    adapter = OpenAiApiAdapter(api_key="sk-test", model_id="gpt-4o")
+    adapter = OpenAiCompatibleHttpEngine(
+        api_key="sk-test",
+        model_id="gpt-4o",
+        deny_pattern=OPENAI_DENY_PATTERN,
+    )
 
     models = await adapter.list_models()
 
@@ -321,7 +332,7 @@ async def test_openai_adapter_list_models_returns_empty_on_transport_error() -> 
     respx.get("https://api.openai.com/v1/models").mock(
         return_value=httpx.Response(500, text="server exploded")
     )
-    adapter = OpenAiApiAdapter(api_key="sk-test", model_id="gpt-4o")
+    adapter = OpenAiCompatibleHttpEngine(api_key="sk-test", model_id="gpt-4o")
     assert await adapter.list_models() == []
 
 
@@ -334,7 +345,7 @@ LIVE = os.environ.get("EUGENE_PLEXUS_HD_LIVE_API") == "1"
 
 @pytest.mark.skipif(not LIVE, reason="set EUGENE_PLEXUS_HD_LIVE_API=1 to run live")
 async def test_openai_live_call() -> None:
-    adapter = OpenAiApiAdapter(timeout_seconds=60.0)
+    adapter = OpenAiCompatibleHttpEngine(timeout_seconds=60.0)
     response = await adapter.generate(
         _request(prompt="Reply with exactly the four characters: PING", system="You are concise.")
     )

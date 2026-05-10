@@ -1,23 +1,24 @@
-"""Adapter for OpenAI-compatible HTTP APIs.
+"""Engine that speaks the OpenAI-compatible HTTP API shape.
 
-Speaks the well-known `POST /v1/chat/completions` shape, so it works
-against:
+Drives every provider that implements `POST /v1/chat/completions`
+with `Authorization: Bearer <key>`:
 
   - OpenAI itself (`https://api.openai.com`)
-  - Together, Groq, Fireworks, DeepInfra, MiniMax, etc — set `base_url`
-    to the provider's OpenAI-compatible endpoint
-  - Local OpenAI-compat servers (vLLM, LM Studio, Ollama, llama.cpp's
-    server) — set `base_url` to the local address
+  - xAI (`https://api.x.ai`)
+  - OpenRouter, Together, Groq, Fireworks, DeepInfra, MiniMax, …
+  - Local OpenAI-compatible servers (Ollama, vLLM, LM Studio,
+    llama.cpp's server)
 
-Unlike the CLI adapters, this one talks to a raw model API, so the
-system prompt actually controls model behavior. No agentic identity
-to subvert; no working-directory injection; no subprocess argv quoting
-games. This is the right side of the bicameral pair when paired with
-Claude Code on the left.
+This is a *transport* — the user-facing "provider" picker decides
+which `Provider` from the registry is in play, and the registry
+hands this engine a `default_base_url`, an optional
+`deny_pattern`, and the `backend_kind` to report. New providers
+that share this protocol = a new entry in `providers.py`, not a
+new engine file.
 
-Auth: an `Authorization: Bearer <api_key>` header. The API key is read
-from config (`openaiApiKey`, sensitive) with a fallback to the
-`OPENAI_API_KEY` env var.
+Auth: `Authorization: Bearer <api_key>` header. The API key is
+read from config (`apiKey`, sensitive) with a fallback to the
+`OPENAI_API_KEY` env var so existing setups still work.
 """
 
 from __future__ import annotations
@@ -31,6 +32,9 @@ import httpx
 
 from .._generated.models import (
     BackendKind,
+    ConfigField,
+    ConfigFieldShowWhen,
+    ConfigValueType,
     FinishReason,
     GenerateRequest,
     GenerateResponse,
@@ -39,36 +43,16 @@ from .._generated.models import (
 )
 from ._subprocess import CliError
 
-# Models that can't be used as a Eugene Plexus hemisphere because they
-# don't actually support a tunable `temperature`:
-#
-# - OpenAI o-series (o1, o3, and their *-mini / *-preview variants):
-#   reject the `temperature` parameter outright.
-# - gpt-5 family: schema accepts the parameter but only the default
-#   value (1) — any other value 400s with "Unsupported value:
-#   'temperature' does not support X with this model. Only the default
-#   (1) value is supported."
-#
-# Eugene Plexus uses temperature as the per-pass divergence knob
-# between hemispheres, and v0.2's NT system will modulate it per-pass
-# per-driver. A model that won't move with temperature has no place in
-# the loop. The adapter refuses to construct against one of these,
-# dropping the driver into degraded mode with a clear message.
-_TEMPERATURE_UNCONTROLLABLE_PATTERN = re.compile(
-    # Prefix-anchored: matches anything in the gpt-5 family
-    # (gpt-5, gpt-5-mini, gpt-5.1, gpt-5.5-pro-2026-04-23, gpt-5.1-codex, …)
-    # or the o-series (o1, o3, o1-preview-2024-09, …). The trailing
-    # `(?:[-.]|$)` insists the match ends at a version separator or
-    # end-of-string so we don't accidentally hit hypothetical
-    # `gpt-50` / `gpt-5o` style names that aren't actually 5.x.
+# Default deny pattern for OpenAI proper (`provider: openai` →
+# OpenAiCompatibleHttpEngine + this pattern). Catches every gpt-5 family
+# member that uses either `-` or `.` after the family name, plus the
+# o-series, while explicitly NOT matching hypothetical `gpt-50` /
+# `gpt-5o` style names that aren't actually 5.x. Other providers can
+# pass their own pattern (or None) via the registry.
+OPENAI_DENY_PATTERN: re.Pattern[str] = re.compile(
     r"^(?:o\d+|gpt-5)(?:[-.]|$)",
     re.IGNORECASE,
 )
-
-
-def _model_rejects_temperature_control(model_id: str) -> bool:
-    return _TEMPERATURE_UNCONTROLLABLE_PATTERN.match(model_id) is not None
-
 
 # OpenAI's `/v1/models` returns every model on the account — embeddings,
 # image, audio, moderation, retired completion-only models, etc. — and
@@ -88,7 +72,7 @@ _NON_CHAT_PREFIXES = (
     "ada-",
     "curie-",
     "computer-use-",
-    "codex-",  # the standalone Codex models — different surface from `codex_cli`
+    "codex-",  # the standalone Codex models — different surface from chatgpt_subscription
 )
 
 _CHAT_MODEL_PREFIXES = (
@@ -99,6 +83,8 @@ _CHAT_MODEL_PREFIXES = (
     "mistral",
     "qwen",
     "deepseek",
+    "grok",
+    "abab",  # MiniMax
 )
 
 
@@ -116,6 +102,7 @@ def _is_plausible_chat_model(model_id: str) -> bool:
         return False
     return lowered.startswith(_CHAT_MODEL_PREFIXES)
 
+
 _FINISH_REASON_MAP = {
     "stop": FinishReason.stop,
     "length": FinishReason.length,
@@ -129,26 +116,16 @@ def _max_tokens_field_for(base_url: str) -> str:
     """Pick the right output-cap field name for this base URL.
 
     OpenAI's chat-completions API now requires `max_completion_tokens`
-    for newer models (gpt-5, o1, o3, etc.) and explicitly rejects
-    `max_tokens`:
-
-        Unsupported parameter: 'max_tokens' is not supported with this
-        model. Use 'max_completion_tokens' instead.
-
-    Self-hosted OpenAI-compatible servers (Ollama, vLLM, LM Studio,
-    llama.cpp) implement the older spec and only understand the
-    legacy `max_tokens` field. Pick by base URL: openai.com → new
-    field; anything else → legacy. If you point this adapter at a
-    third-party provider that has also migrated to
-    `max_completion_tokens` and your requests start 400'ing on the
-    legacy field, log a bug — we'll either expand the URL match list
-    or move to a try/fallback strategy.
+    for newer models and explicitly rejects `max_tokens`. Self-hosted
+    OpenAI-compatible servers (Ollama, vLLM, LM Studio, llama.cpp)
+    still implement the older spec and only understand `max_tokens`.
+    Pick by base URL: openai.com → new field; anything else → legacy.
     """
     return "max_completion_tokens" if "openai.com" in base_url.lower() else "max_tokens"
 
 
-class OpenAiApiAdapter:
-    backend_kind = "openai_api"
+class OpenAiCompatibleHttpEngine:
+    """OpenAI-compatible HTTP engine. Provider-agnostic."""
 
     def __init__(
         self,
@@ -157,30 +134,86 @@ class OpenAiApiAdapter:
         base_url: str = "https://api.openai.com",
         model_id: str = "gpt-4o",
         timeout_seconds: float = 120.0,
+        deny_pattern: re.Pattern[str] | None = None,
+        backend_kind: BackendKind = BackendKind.openai_api,
     ) -> None:
         resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not resolved_key:
             raise CliError(
-                "openai_api adapter has no API key — set `openaiApiKey` in "
-                "config or export OPENAI_API_KEY."
+                "openai_compat_http engine has no API key — set `apiKey` in "
+                "config or export OPENAI_API_KEY in the environment."
             )
-        if _model_rejects_temperature_control(model_id):
+        if deny_pattern is not None and deny_pattern.match(model_id):
             raise CliError(
-                f"openai_api: model {model_id!r} doesn't support a tunable "
-                "`temperature` parameter (OpenAI's o-series rejects it "
-                "outright; the gpt-5 family schema-accepts it but only the "
-                "default value of 1 — any other value 400s). Eugene Plexus "
-                "uses temperature as the per-pass divergence knob between "
-                "hemispheres, and v0.2's NT system modulates it per-pass "
+                f"This provider rejects model {model_id!r} because it doesn't "
+                "support a tunable `temperature` parameter (e.g. OpenAI's "
+                "o-series rejects temperature outright; the gpt-5 family "
+                "schema-accepts it but only the default value of 1). Eugene "
+                "Plexus uses temperature as the per-pass divergence knob "
+                "between hemispheres, and v0.2's NT system modulates it "
                 "per-driver — a model that won't move with temperature has "
                 "no place in the bicameral loop. Pick a non-reasoning chat "
-                "model with controllable temperature: gpt-4o, gpt-4o-mini, "
-                "gpt-4.1, gpt-4-turbo."
+                "model with controllable temperature from the dropdown."
             )
         self._api_key = resolved_key
         self._base_url = base_url.rstrip("/")
         self._model_id = model_id
         self._timeout_seconds = timeout_seconds
+        self._deny_pattern = deny_pattern
+        self.backend_kind = backend_kind
+
+    @classmethod
+    def field_specs(cls, *, applicable_providers: list[str]) -> list[ConfigField]:
+        """Config fields this engine reads. The schema builder shows
+        each one only when one of `applicable_providers` is selected."""
+        show_when = ConfigFieldShowWhen(key="provider", equals=applicable_providers)
+        return [
+            ConfigField(
+                key="apiKey",
+                label="API Key",
+                description=(
+                    "Secret key sent as the `Authorization: Bearer ...` "
+                    "header on every API call. Get one from the provider's "
+                    "console (OpenAI, xAI, OpenRouter, MiniMax, your "
+                    "self-hosted server, etc.). If left blank, the driver "
+                    "falls back to the `OPENAI_API_KEY` environment variable "
+                    "in the shell that started it. Stored on disk in plain "
+                    "text in v0.1; at-rest encryption is on the v0.2 list."
+                ),
+                category="adapter",
+                valueType=ConfigValueType.secret,
+                sensitive=True,
+                requiresRestart=True,
+                showWhen=show_when,
+            ),
+        ]
+
+    @classmethod
+    def from_config(
+        cls,
+        get: Any,
+        *,
+        default_base_url: str | None,
+        deny_pattern: re.Pattern[str] | None,
+        backend_kind: BackendKind,
+    ) -> OpenAiCompatibleHttpEngine:
+        # User's `baseUrl` wins (set only for openai_compat_custom);
+        # otherwise the provider's default applies.
+        base_url = str(get("baseUrl") or default_base_url or "").strip()
+        if not base_url:
+            raise CliError(
+                "OpenAI-compatible engine has no base URL. For the custom "
+                "provider, set `baseUrl` in config. For named providers, "
+                "this is a registry bug — file an issue."
+            )
+        return cls(
+            api_key=str(get("apiKey") or "") or None,
+            base_url=base_url,
+            model_id=str(get("modelId") or "gpt-4o"),
+            timeout_seconds=float(get("requestTimeoutSeconds") or 120),
+            deny_pattern=deny_pattern,
+            backend_kind=backend_kind,
+        )
 
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
         payload: dict[str, Any] = {
@@ -208,27 +241,30 @@ class OpenAiApiAdapter:
                     json=payload,
                 )
             except httpx.HTTPError as e:
-                raise CliError(f"openai_api request failed: {e}") from e
+                raise CliError(f"openai_compat_http request failed: {e}") from e
 
         if response.status_code >= 400:
             raise CliError(
-                f"openai_api returned {response.status_code}: {_redact(response.text[:500])}"
+                f"openai_compat_http returned {response.status_code}: "
+                f"{_redact(response.text[:500])}"
             )
 
         try:
             body = response.json()
         except ValueError as e:
-            raise CliError(f"openai_api returned non-JSON: {response.text[:200]!r}") from e
+            raise CliError(
+                f"openai_compat_http returned non-JSON: {response.text[:200]!r}"
+            ) from e
 
         choices = body.get("choices") or []
         if not choices:
-            raise CliError(f"openai_api returned no choices: {body!r}")
+            raise CliError(f"openai_compat_http returned no choices: {body!r}")
 
         first = choices[0] or {}
         message = first.get("message") or {}
         content = message.get("content")
         if not isinstance(content, str):
-            raise CliError(f"openai_api response missing string content: {body!r}")
+            raise CliError(f"openai_compat_http response missing string content: {body!r}")
 
         return GenerateResponse(
             content=content,
@@ -237,15 +273,15 @@ class OpenAiApiAdapter:
             ),
             usage=_usage_from_envelope(body.get("usage") or {}),
             requestId=request.requestId,
-            backend=BackendKind.openai_api,
+            backend=self.backend_kind,
             modelId=str(body.get("model") or self._model_id),
             latencyMs=int(response.elapsed.total_seconds() * 1000),
         )
 
     async def stream(self, request: GenerateRequest) -> AsyncIterator[object]:
-        # OpenAI Chat Completions supports SSE streaming via stream=true,
+        # SSE streaming via stream=true is supported by the wire shape
         # but no consumer of hemisphere-driver streaming exists yet.
-        raise NotImplementedError("OpenAiApiAdapter.stream not implemented in v0.1")
+        raise NotImplementedError("OpenAiCompatibleHttpEngine.stream not implemented in v0.1")
         yield  # pragma: no cover
 
     async def list_models(self) -> list[str]:
@@ -257,8 +293,7 @@ class OpenAiApiAdapter:
 
         - non-chat models (embeddings, dall-e, whisper, tts, moderation,
           codex-only, audio) — heuristic by id prefix / substring
-        - models we'd reject at adapter construction anyway
-          (`_TEMPERATURE_UNCONTROLLABLE_PATTERN`)
+        - models the configured `deny_pattern` would refuse at construction
 
         Returns `[]` on transport / parse failure so the schema endpoint
         can fall back to free-text input. Driver stays up either way.
@@ -292,7 +327,7 @@ class OpenAiApiAdapter:
                 continue
             if not _is_plausible_chat_model(mid):
                 continue
-            if _model_rejects_temperature_control(mid):
+            if self._deny_pattern is not None and self._deny_pattern.match(mid):
                 continue
             ids.append(mid)
         ids.sort()
@@ -300,12 +335,7 @@ class OpenAiApiAdapter:
 
 
 def _to_openai_messages(messages: list[Any]) -> list[dict[str, str]]:
-    """Map our Message[] to OpenAI chat-completions messages.
-
-    OpenAI's role taxonomy is system / user / assistant. We collapse our
-    `hemisphere` role into `assistant` (those messages came from a
-    hemisphere on a previous pass and act as prior assistant turns).
-    """
+    """Map our Message[] to OpenAI chat-completions messages."""
     out: list[dict[str, str]] = []
     for m in messages:
         if m.role == Role.system:

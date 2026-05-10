@@ -8,10 +8,10 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, HTTPException, Request, status
 
 from .._generated.models import GenerateRequest, GenerateResponse, Problem
-from ..adapters._subprocess import CliError
+from ..engines._subprocess import CliError
 
 if TYPE_CHECKING:
-    from ..app import _Adapter
+    from ..engines.base import HemisphereEngine
 
 router = APIRouter(tags=["inference"])
 
@@ -20,34 +20,37 @@ log = logging.getLogger(__name__)
 
 @router.post("/v1/generate", response_model=GenerateResponse)
 async def generate(request: Request, body: GenerateRequest) -> GenerateResponse:
-    adapter: _Adapter | None = request.app.state.adapter
-    if adapter is None:
+    engine: HemisphereEngine | None = request.app.state.adapter
+    if engine is None:
         adapter_error = getattr(request.app.state, "adapter_error", None)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=Problem(
-                type="https://github.com/eugene-plexus/hemisphere-driver#adapter-not-configured",
-                title="Adapter not configured",
+                type="https://github.com/eugene-plexus/hemisphere-driver#engine-not-configured",
+                title="Engine not configured",
                 status=503,
                 detail=(
-                    f"This driver has no working adapter. {adapter_error or 'Unknown error.'} "
+                    f"This driver has no working engine. {adapter_error or 'Unknown error.'} "
                     "Update the configuration via PATCH /v1/config and restart the driver."
                 ),
                 component="hemisphere-driver:degraded",
             ).model_dump(exclude_none=True),
         )
     try:
-        return await adapter.generate(body)
+        return await engine.generate(body)
     except CliError as e:
-        log.warning("CLI invocation failed: %s", e)
+        log.warning("backend invocation failed: %s", e)
+        # `backend_kind` is BackendKind in production but tests may stub
+        # it as a plain string — accept either via getattr.
+        kind_label = getattr(engine.backend_kind, "value", str(engine.backend_kind))
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=Problem(
-                type="https://github.com/eugene-plexus/hemisphere-driver#cli-error",
-                title="Backend CLI error",
+                type="https://github.com/eugene-plexus/hemisphere-driver#backend-error",
+                title="Backend error",
                 status=502,
                 detail=str(e),
-                component=f"hemisphere-driver:{adapter.backend_kind}",
+                component=f"hemisphere-driver:{kind_label}",
             ).model_dump(exclude_none=True),
         ) from e
 

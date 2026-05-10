@@ -18,18 +18,17 @@ from eugene_plexus_hemisphere_driver.settings import Settings
 
 @pytest.fixture
 def degraded_app_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
-    """A config that picks the openai_api adapter without an API key.
+    """A config that picks the OpenAI provider without an API key.
 
-    The OPENAI_API_KEY env var is also unset, so adapter construction
+    The OPENAI_API_KEY env var is also unset, so engine construction
     raises and the lifespan falls into degraded mode.
     """
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         """\
-adapter: openai_api
-modelId: gpt-5
-openaiBaseUrl: https://api.openai.com
+provider: openai
+modelId: gpt-4o
 port: 8081
 logLevel: INFO
 requestTimeoutSeconds: 120
@@ -39,7 +38,7 @@ requestTimeoutSeconds: 120
     return Settings(config_file=config_path)
 
 
-def test_driver_comes_up_with_broken_adapter_config(
+def test_driver_comes_up_with_broken_engine_config(
     degraded_app_settings: Settings,
 ) -> None:
     app = create_app(settings=degraded_app_settings)
@@ -63,14 +62,14 @@ def test_config_endpoints_work_in_degraded_mode(degraded_app_settings: Settings)
 
         doc = client.get("/v1/config")
         assert doc.status_code == 200
-        assert doc.json()["adapter"] == "openai_api"
+        assert doc.json()["provider"] == "openai"
 
         patch = client.patch(
             "/v1/config",
-            json={"openaiApiKey": "sk-test-fix"},
+            json={"apiKey": "sk-test-fix"},
         )
         assert patch.status_code == 200
-        assert "openaiApiKey" in patch.json()["applied"]
+        assert "apiKey" in patch.json()["applied"]
 
 
 def test_generate_returns_503_in_degraded_mode(degraded_app_settings: Settings) -> None:
@@ -82,5 +81,5 @@ def test_generate_returns_503_in_degraded_mode(degraded_app_settings: Settings) 
         )
         assert response.status_code == 503
         detail = response.json()["detail"]
-        assert detail["title"] == "Adapter not configured"
+        assert detail["title"] == "Engine not configured"
         assert "Update the configuration" in detail["detail"]

@@ -5,16 +5,14 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import Any, Protocol
+from typing import Any
 
 from fastapi import FastAPI
 
 from . import __version__
-from ._generated.models import GenerateRequest, GenerateResponse
-from .adapters.claude_code_cli import ClaudeCodeCliAdapter
-from .adapters.codex_cli import CodexCliAdapter
-from .adapters.openai_api import OpenAiApiAdapter
 from .config import ConfigStore
+from .engines.base import HemisphereEngine
+from .providers import get_provider
 from .routes import config as config_routes
 from .routes import generate as generate_routes
 from .routes import health as health_routes
@@ -24,47 +22,29 @@ from .settings import Settings, load_settings
 log = logging.getLogger(__name__)
 
 
-class _Adapter(Protocol):
-    backend_kind: str
+def build_engine_with(get: Callable[[str], Any]) -> HemisphereEngine:
+    """Construct an engine from a key->value getter.
 
-    async def generate(self, request: GenerateRequest) -> GenerateResponse: ...
-
-
-def build_adapter_with(get: Callable[[str], Any]) -> _Adapter:
-    """Construct an adapter from a key->value lookup. Used directly by the
-    `/v1/config/test` endpoint to build a temporary adapter from saved
-    config + transient overrides without touching the persisted store."""
-    adapter_kind = str(get("adapter") or "")
-    model_id = get("modelId") or None
-    timeout = float(get("requestTimeoutSeconds") or 120)
-
-    if adapter_kind == "claude_code_cli":
-        return ClaudeCodeCliAdapter(
-            binary_path=str(get("claudeCodeCliPath") or "claude"),
-            model_id=model_id,
-            timeout_seconds=timeout,
-        )
-    if adapter_kind == "codex_cli":
-        return CodexCliAdapter(
-            binary_path=str(get("codexCliPath") or "codex"),
-            model_id=model_id,
-            timeout_seconds=timeout,
-        )
-    if adapter_kind == "openai_api":
-        return OpenAiApiAdapter(
-            api_key=str(get("openaiApiKey") or "") or None,
-            base_url=str(get("openaiBaseUrl") or "https://api.openai.com"),
-            model_id=model_id or "gpt-4o",
-            timeout_seconds=timeout,
-        )
-    raise ValueError(
-        f"unknown adapter {adapter_kind!r}; valid: claude_code_cli, codex_cli, openai_api"
-    )
+    Reads `provider` from the getter, looks up its registry entry, and
+    asks the entry's engine class to construct itself from the same
+    getter (with provider-specific kwargs forwarded). Used directly by
+    `/v1/config/test` to build a temporary engine from saved config +
+    transient overrides without touching the persisted store.
+    """
+    provider_key = str(get("provider") or "").strip()
+    if not provider_key:
+        raise ValueError("config has no `provider` set; pick one in the UI / config file")
+    provider = get_provider(provider_key)
+    # `engine_class` is `Any` in the registry (Protocol classes are
+    # invariant in `type[]`), but every registered class implements
+    # `HemisphereEngine` — annotate the return through a local cast.
+    engine: HemisphereEngine = provider.engine_class.from_config(get, **provider.engine_kwargs)
+    return engine
 
 
-def build_adapter(store: ConfigStore) -> _Adapter:
-    """Construct the configured adapter from the runtime config store."""
-    return build_adapter_with(store.get)
+def build_engine(store: ConfigStore) -> HemisphereEngine:
+    """Construct the configured engine from the runtime config store."""
+    return build_engine_with(store.get)
 
 
 @asynccontextmanager
@@ -74,30 +54,31 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     store.load()
     app.state.config_store = store
 
-    # Adapter construction can fail (missing API key, unknown adapter kind,
+    # Engine construction can fail (missing API key, unknown provider,
     # bad binary path, etc). The driver MUST come up anyway so its
-    # /v1/config endpoints stay reachable — otherwise a broken config locks
-    # operators out of fixing it through the UI, exactly the OpenClaw
-    # failure mode this project exists to avoid. We record the error on
-    # app.state and let /v1/generate surface it as a 503 until the config
-    # is fixed and the driver restarted.
+    # /v1/config endpoints stay reachable — otherwise a broken config
+    # locks operators out of fixing it through the UI, exactly the
+    # OpenClaw failure mode this project exists to avoid. We record the
+    # error on app.state and let /v1/generate surface it as a 503 until
+    # the config is fixed and the driver restarted.
     try:
-        app.state.adapter = build_adapter(store)
+        engine = build_engine(store)
+        app.state.adapter = engine  # historical name; routes still read `app.state.adapter`
         app.state.adapter_error = None
-        log.info("adapter ready: %s", app.state.adapter.backend_kind)
+        log.info("engine ready: backend=%s", engine.backend_kind.value)
     except Exception as e:
         app.state.adapter = None
         app.state.adapter_error = str(e)
         log.error(
-            "adapter initialization failed (%s); driver running in degraded "
+            "engine initialization failed (%s); driver running in degraded "
             "mode — fix config via /v1/config and restart",
             e,
         )
 
-    # Discover the adapter's available models for the modelId dropdown
-    # in the UI. Best-effort: an unreachable backend (e.g. OpenAI down)
-    # leaves the list empty and the schema falls back to free-text input.
-    # Failure here is NEVER fatal — the driver itself is otherwise up.
+    # Discover the engine's available models for the modelId dropdown
+    # in the UI. Best-effort: an unreachable backend leaves the list
+    # empty and the schema falls back to free-text input. Failure here
+    # is NEVER fatal — the driver itself is otherwise up.
     app.state.available_models = []
     if app.state.adapter is not None:
         try:
@@ -106,10 +87,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             log.info(
                 "discovered %d models from %s",
                 len(app.state.available_models),
-                app.state.adapter.backend_kind,
+                app.state.adapter.backend_kind.value,
             )
         except Exception as e:
-            log.warning("list_models failed for %s: %s", app.state.adapter.backend_kind, e)
+            log.warning(
+                "list_models failed for %s: %s",
+                app.state.adapter.backend_kind.value,
+                e,
+            )
 
     yield
 

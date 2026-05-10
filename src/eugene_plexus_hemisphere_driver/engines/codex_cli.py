@@ -49,6 +49,9 @@ from typing import Any
 
 from .._generated.models import (
     BackendKind,
+    ConfigField,
+    ConfigFieldShowWhen,
+    ConfigValueType,
     FinishReason,
     GenerateRequest,
     GenerateResponse,
@@ -72,8 +75,8 @@ _KNOWN_CODEX_MODELS: list[str] = [
 ]
 
 
-class CodexCliAdapter:
-    backend_kind = "codex_cli"
+class CodexCliEngine:
+    backend_kind = BackendKind.codex_cli
 
     def __init__(
         self,
@@ -85,6 +88,34 @@ class CodexCliAdapter:
         self._binary_path = binary_path
         self._model_id = model_id
         self._timeout_seconds = timeout_seconds
+
+    @classmethod
+    def field_specs(cls, *, applicable_providers: list[str]) -> list[ConfigField]:
+        show_when = ConfigFieldShowWhen(key="provider", equals=applicable_providers)
+        return [
+            ConfigField(
+                key="codexCliPath",
+                label="Codex CLI binary",
+                description=(
+                    "Where to find the `codex` command. Just `codex` "
+                    "works if the binary is on your `PATH`; otherwise "
+                    "give the full path."
+                ),
+                category="adapter",
+                valueType=ConfigValueType.file_path,
+                default="codex",
+                requiresRestart=True,
+                showWhen=show_when,
+            ),
+        ]
+
+    @classmethod
+    def from_config(cls, get: Any) -> CodexCliEngine:
+        return cls(
+            binary_path=str(get("codexCliPath") or "codex"),
+            model_id=get("modelId") or None,
+            timeout_seconds=float(get("requestTimeoutSeconds") or 120),
+        )
 
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
         argv = self._build_argv(messages_to_prompt(list(request.messages)))
@@ -142,7 +173,7 @@ class CodexCliAdapter:
     async def stream(self, request: GenerateRequest) -> AsyncIterator[object]:
         # Codex's --json mode is already a streamable JSONL feed; wiring it
         # through end-to-end waits on a real consumer (orchestrator + ui).
-        raise NotImplementedError("CodexCliAdapter.stream not implemented in v0.1")
+        raise NotImplementedError("CodexCliEngine.stream not implemented in v0.1")
         yield  # pragma: no cover
 
     async def list_models(self) -> list[str]:

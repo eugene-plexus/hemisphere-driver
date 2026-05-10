@@ -22,173 +22,150 @@ from ._generated.models import (
     ConfigDocument,
     ConfigField,
     ConfigFieldError,
-    ConfigFieldShowWhen,
     ConfigSchema,
     ConfigUpdateRequest,
     ConfigUpdateResult,
     ConfigValueType,
 )
+from .engines.claude_code_cli import ClaudeCodeCliEngine
+from .engines.codex_cli import CodexCliEngine
+from .engines.openai_compat_http import OpenAiCompatibleHttpEngine
+from .providers import PROVIDERS, collect_extra_field_specs, providers_using
 
 REDACTED = "<redacted>"
 
 CATEGORY_LABELS: dict[str, str] = {
-    "adapter": "Backend Adapter",
+    "adapter": "Provider",
     "network": "Network",
     "logging": "Logging",
 }
 
-# Schema for hemisphere-driver's config surface. The order here is the
-# order the UI will render the fields in.
-FIELDS: list[ConfigField] = [
-    ConfigField(
-        key="adapter",
-        label="Backend",
+
+def _provider_field() -> ConfigField:
+    """The user-facing dropdown — which subscription / service this
+    driver wraps. Values are stable registry keys; labels are
+    operator-friendly. Each downstream engine field carries its own
+    `showWhen` against this field so irrelevant inputs disappear."""
+    keys = list(PROVIDERS.keys())
+    labels = [PROVIDERS[k].label for k in keys]
+    return ConfigField(
+        key="provider",
+        label="Provider",
         description=(
-            "Which kind of LLM this driver talks to. "
-            "`claude_code_cli` shells out to your locally-installed Claude "
-            "Code CLI (uses your Claude Pro/Max subscription — no API "
-            "billing). `codex_cli` shells out to OpenAI's Codex CLI "
-            "(same idea, ChatGPT subscription). `openai_api` calls any "
-            "OpenAI-compatible HTTP API directly with an API key — "
-            "OpenAI itself, or self-hosted servers like Ollama, vLLM, "
-            "or LM Studio. Switching this changes which other fields "
-            "below are relevant."
+            "Which LLM subscription or service this driver wraps. "
+            "The fields shown below adapt to your choice — Claude / "
+            "ChatGPT subscriptions ask for the local CLI binary; "
+            "OpenAI / xAI / OpenRouter / MiniMax / etc. ask for an "
+            "API key; the Custom option lets you point at any "
+            "OpenAI-compatible URL. Switching this changes which "
+            "other fields are relevant; restart required so the "
+            "engine reconnects."
         ),
         category="adapter",
         valueType=ConfigValueType.enum,
-        default="claude_code_cli",
-        enumValues=["claude_code_cli", "codex_cli", "openai_api"],
+        default="claude_subscription",
+        enumValues=keys,
+        enumLabels=labels,
         required=True,
         requiresRestart=True,
-    ),
-    ConfigField(
+    )
+
+
+def _modelid_field() -> ConfigField:
+    """The model picker. Always shown; per-engine model lists are
+    discovered live and supplied via `as_schema(available_models=...)`."""
+    return ConfigField(
         key="modelId",
-        label="Model ID",
+        label="Model",
         description=(
-            "Specific model name to ask the backend for (e.g. "
-            "\"claude-opus-4-7\", \"gpt-5\", \"llama3.1:70b\"). Leave "
-            "blank to use the adapter's built-in default — fine for "
-            "personal-subscription CLIs, but you'll usually want to pin "
-            "a specific model when calling an API."
+            "Which specific model to ask the backend for (e.g. "
+            "\"gpt-4o\", \"claude-opus-4-7\", \"grok-2\", "
+            "\"llama3.1:70b\"). The list below is discovered from the "
+            "selected provider; pick the empty entry to fall back to "
+            "the engine's built-in default."
         ),
         category="adapter",
         valueType=ConfigValueType.string,
         requiresRestart=True,
-    ),
-    ConfigField(
-        key="claudeCodeCliPath",
-        label="Claude Code CLI binary",
-        description=(
-            "Where to find the `claude` command. Just `claude` works if "
-            "the binary is on your `PATH`; otherwise give the full path "
-            "(e.g. `/usr/local/bin/claude` or `C:\\Users\\you\\AppData"
-            "\\Local\\claude\\claude.exe`)."
+    )
+
+
+def _common_fields() -> list[ConfigField]:
+    """Provider-agnostic fields — port, logging, timeouts."""
+    return [
+        ConfigField(
+            key="port",
+            label="HTTP port",
+            description=(
+                "Port the orchestrator (or any other client) connects "
+                "to *this driver* on. The driver listens on it; "
+                "nothing outside this process. v0.1 default leaves "
+                "the canonical bicameral pair on 8081 (left) and "
+                "8082 (right). Change only if those are taken on "
+                "your machine."
+            ),
+            category="network",
+            valueType=ConfigValueType.integer,
+            default=8081,
+            minimum=1,
+            maximum=65535,
+            requiresRestart=True,
         ),
-        category="adapter",
-        valueType=ConfigValueType.file_path,
-        default="claude",
-        requiresRestart=True,
-        showWhen=ConfigFieldShowWhen(key="adapter", equals="claude_code_cli"),
-    ),
-    ConfigField(
-        key="codexCliPath",
-        label="Codex CLI binary",
-        description=(
-            "Where to find the `codex` command. Just `codex` works if "
-            "the binary is on your `PATH`; otherwise give the full path."
+        ConfigField(
+            key="logLevel",
+            label="Log level",
+            description=(
+                "How chatty the driver's terminal output is. `DEBUG` "
+                "prints every backend call (useful when something's "
+                "broken); `INFO` is the normal operating level; "
+                "`WARNING` and `ERROR` go progressively quieter."
+            ),
+            category="logging",
+            valueType=ConfigValueType.enum,
+            default="INFO",
+            enumValues=["DEBUG", "INFO", "WARNING", "ERROR"],
+            requiresRestart=True,
         ),
-        category="adapter",
-        valueType=ConfigValueType.file_path,
-        default="codex",
-        requiresRestart=True,
-        showWhen=ConfigFieldShowWhen(key="adapter", equals="codex_cli"),
-    ),
-    ConfigField(
-        key="openaiApiKey",
-        label="OpenAI API key",
-        description=(
-            "Secret key sent as the `Authorization: Bearer ...` header on "
-            "every API call. Get one from the provider you're using "
-            "(OpenAI, Groq, Together, your self-hosted server, etc.). "
-            "If you leave this blank, the driver will fall back to the "
-            "`OPENAI_API_KEY` environment variable in the shell that "
-            "started it. Stored on disk in plain text in v0.1; "
-            "at-rest encryption is on the v0.2 list."
+        ConfigField(
+            key="requestTimeoutSeconds",
+            label="Backend timeout",
+            description=(
+                "How long the driver will wait on a single LLM call "
+                "before giving up and returning an error. Long-running "
+                "CLI invocations and large reasoning models can take "
+                "a while; 120s is the v0.1 default. Bump it if you "
+                "see timeouts on complex prompts."
+            ),
+            category="network",
+            valueType=ConfigValueType.duration,
+            default=120,
+            minimum=5,
+            maximum=900,
+            requiresRestart=True,
         ),
-        category="adapter",
-        valueType=ConfigValueType.secret,
-        sensitive=True,
-        requiresRestart=True,
-        showWhen=ConfigFieldShowWhen(key="adapter", equals="openai_api"),
-    ),
-    ConfigField(
-        key="openaiBaseUrl",
-        label="OpenAI base URL",
-        description=(
-            "Where to send the API calls. The default points at OpenAI's "
-            "servers. Change it to use any OpenAI-compatible provider — "
-            "for example: `https://api.groq.com/openai` for Groq, "
-            "`https://api.together.xyz` for Together, "
-            "`http://127.0.0.1:11434` for a local Ollama, "
-            "`http://127.0.0.1:8000` for a local vLLM. The "
-            "`/v1/chat/completions` path is appended automatically."
-        ),
-        category="adapter",
-        valueType=ConfigValueType.url,
-        default="https://api.openai.com",
-        requiresRestart=True,
-        showWhen=ConfigFieldShowWhen(key="adapter", equals="openai_api"),
-    ),
-    ConfigField(
-        key="port",
-        label="HTTP port",
-        description=(
-            "Port the orchestrator (or any other client) connects to "
-            "*this driver* on. The driver listens on it; nothing outside "
-            "this process. v0.1 default leaves the canonical bicameral "
-            "pair on 8081 (left) and 8082 (right). Change only if those "
-            "are taken on your machine."
-        ),
-        category="network",
-        valueType=ConfigValueType.integer,
-        default=8081,
-        minimum=1,
-        maximum=65535,
-        requiresRestart=True,
-    ),
-    ConfigField(
-        key="logLevel",
-        label="Log level",
-        description=(
-            "How chatty the driver's terminal output is. `DEBUG` prints "
-            "every backend call (useful when something's broken); "
-            "`INFO` is the normal operating level; `WARNING` and "
-            "`ERROR` go progressively quieter."
-        ),
-        category="logging",
-        valueType=ConfigValueType.enum,
-        default="INFO",
-        enumValues=["DEBUG", "INFO", "WARNING", "ERROR"],
-        requiresRestart=True,
-    ),
-    ConfigField(
-        key="requestTimeoutSeconds",
-        label="Backend timeout",
-        description=(
-            "How long the driver will wait on a single LLM call before "
-            "giving up and returning an error. Long-running CLI "
-            "invocations and large reasoning models can take a while; "
-            "120s is the v0.1 default. Bump it if you see timeouts on "
-            "complex prompts."
-        ),
-        category="network",
-        valueType=ConfigValueType.duration,
-        default=120,
-        minimum=5,
-        maximum=900,
-        requiresRestart=True,
-    ),
-]
+    ]
+
+
+def _build_fields() -> list[ConfigField]:
+    """Compose the full FIELDS list from the registry. Order:
+    provider -> modelId -> per-engine fields -> per-provider extras -> common."""
+    out: list[ConfigField] = [_provider_field(), _modelid_field()]
+    seen: set[type] = set()
+    for engine_cls in (ClaudeCodeCliEngine, CodexCliEngine, OpenAiCompatibleHttpEngine):
+        if engine_cls in seen:
+            continue
+        seen.add(engine_cls)
+        applicable = providers_using(engine_cls)
+        if not applicable:
+            continue
+        out.extend(engine_cls.field_specs(applicable_providers=applicable))
+    out.extend(collect_extra_field_specs())
+    out.extend(_common_fields())
+    return out
+
+# Schema for hemisphere-driver's config surface. Built dynamically from
+# the provider registry — the order here is the order the UI renders.
+FIELDS: list[ConfigField] = _build_fields()
 # NOTE on what's NOT in this schema:
 # Temperature, max-tokens, stop sequences and other parameters that alter
 # LLM output are owned by the *caller* (the orchestrator) and arrive on

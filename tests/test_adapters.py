@@ -22,10 +22,10 @@ from eugene_plexus_hemisphere_driver._generated.models import (
     Message,
     Role,
 )
-from eugene_plexus_hemisphere_driver.adapters import _subprocess
-from eugene_plexus_hemisphere_driver.adapters._subprocess import CliError, CliResult
-from eugene_plexus_hemisphere_driver.adapters.claude_code_cli import ClaudeCodeCliAdapter
-from eugene_plexus_hemisphere_driver.adapters.codex_cli import CodexCliAdapter
+from eugene_plexus_hemisphere_driver.engines import _subprocess
+from eugene_plexus_hemisphere_driver.engines._subprocess import CliError, CliResult
+from eugene_plexus_hemisphere_driver.engines.claude_code_cli import ClaudeCodeCliEngine
+from eugene_plexus_hemisphere_driver.engines.codex_cli import CodexCliEngine
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -62,11 +62,11 @@ def _patch_run_cli(
     # `from ._subprocess import run_cli` style imports.
     monkeypatch.setattr(_subprocess, "run_cli", _fake_run_cli)
     monkeypatch.setattr(
-        "eugene_plexus_hemisphere_driver.adapters.claude_code_cli.run_cli",
+        "eugene_plexus_hemisphere_driver.engines.claude_code_cli.run_cli",
         _fake_run_cli,
     )
     monkeypatch.setattr(
-        "eugene_plexus_hemisphere_driver.adapters.codex_cli.run_cli",
+        "eugene_plexus_hemisphere_driver.engines.codex_cli.run_cli",
         _fake_run_cli,
     )
     return captured
@@ -104,7 +104,7 @@ async def test_claude_adapter_parses_success_envelope(
             elapsed_ms=2000,
         ),
     )
-    adapter = ClaudeCodeCliAdapter(model_id="claude-opus-4-7", timeout_seconds=30.0)
+    adapter = ClaudeCodeCliEngine(model_id="claude-opus-4-7", timeout_seconds=30.0)
 
     response = await adapter.generate(_request())
 
@@ -145,7 +145,7 @@ async def test_claude_adapter_omits_model_when_not_pinned(
             elapsed_ms=1000,
         ),
     )
-    adapter = ClaudeCodeCliAdapter()  # model_id=None
+    adapter = ClaudeCodeCliEngine()  # model_id=None
     await adapter.generate(_request())
     assert "--model" not in captured["argv"]
 
@@ -169,7 +169,7 @@ async def test_claude_adapter_handles_multiline_history_via_stdin(
             elapsed_ms=1000,
         ),
     )
-    adapter = ClaudeCodeCliAdapter()
+    adapter = ClaudeCodeCliEngine()
     await adapter.generate(
         GenerateRequest(
             messages=[
@@ -215,7 +215,7 @@ async def test_claude_adapter_passes_system_prompt_when_system_messages_exist(
             elapsed_ms=1000,
         ),
     )
-    adapter = ClaudeCodeCliAdapter()
+    adapter = ClaudeCodeCliEngine()
     await adapter.generate(
         GenerateRequest(
             messages=[
@@ -246,7 +246,7 @@ async def test_claude_adapter_omits_system_prompt_when_no_system_messages(
             elapsed_ms=1000,
         ),
     )
-    adapter = ClaudeCodeCliAdapter()
+    adapter = ClaudeCodeCliEngine()
     await adapter.generate(_request())  # user-only message
     assert "--system-prompt" not in captured["argv"]
 
@@ -270,7 +270,7 @@ async def test_claude_adapter_preserves_utf8_em_dash(
         monkeypatch,
         lambda argv: CliResult(stdout=payload, stderr=b"", returncode=0, elapsed_ms=10),
     )
-    adapter = ClaudeCodeCliAdapter()
+    adapter = ClaudeCodeCliEngine()
     response = await adapter.generate(_request())
     assert em_dash in response.content
     assert "â€" not in response.content
@@ -303,7 +303,7 @@ async def test_claude_adapter_raises_on_is_error(
             elapsed_ms=100,
         ),
     )
-    adapter = ClaudeCodeCliAdapter()
+    adapter = ClaudeCodeCliEngine()
     with pytest.raises(CliError, match="Not logged in"):
         await adapter.generate(_request())
 
@@ -320,7 +320,7 @@ async def test_claude_adapter_raises_on_nonzero_exit(
             elapsed_ms=50,
         ),
     )
-    adapter = ClaudeCodeCliAdapter()
+    adapter = ClaudeCodeCliEngine()
     with pytest.raises(CliError, match="exited 2"):
         await adapter.generate(_request())
 
@@ -345,7 +345,7 @@ async def test_codex_adapter_parses_jsonl_stream(
         monkeypatch,
         lambda argv: CliResult(stdout=CODEX_OK_STREAM, stderr=b"", returncode=0, elapsed_ms=1500),
     )
-    adapter = CodexCliAdapter(model_id="gpt-5", timeout_seconds=60.0)
+    adapter = CodexCliEngine(model_id="gpt-5", timeout_seconds=60.0)
 
     response = await adapter.generate(_request())
 
@@ -376,7 +376,7 @@ async def test_codex_adapter_raises_when_no_agent_message(
         monkeypatch,
         lambda argv: CliResult(stdout=stream, stderr=b"", returncode=0, elapsed_ms=10),
     )
-    adapter = CodexCliAdapter()
+    adapter = CodexCliEngine()
     with pytest.raises(CliError, match="without producing an agent_message"):
         await adapter.generate(_request())
 
@@ -393,7 +393,7 @@ async def test_codex_adapter_concatenates_multi_message_output(
         monkeypatch,
         lambda argv: CliResult(stdout=stream, stderr=b"", returncode=0, elapsed_ms=10),
     )
-    adapter = CodexCliAdapter()
+    adapter = CodexCliEngine()
     response = await adapter.generate(_request())
     assert response.content == "Hello world"
 
@@ -403,7 +403,7 @@ async def test_claude_adapter_list_models_returns_known_chat_models() -> None:
     chat-tier Claude models. Pin the contract: list is non-empty,
     every entry starts with `claude-`, and it includes the current
     flagship model."""
-    adapter = ClaudeCodeCliAdapter()
+    adapter = ClaudeCodeCliEngine()
     models = await adapter.list_models()
     assert models  # non-empty
     assert all(m.startswith("claude-") for m in models)
@@ -414,7 +414,7 @@ async def test_codex_adapter_list_models_excludes_temperature_uncontrollable() -
     """Codex CLI hardcodes a list too; verify it deliberately excludes
     o-series and gpt-5 family — Eugene Plexus's hemisphere policy
     applies regardless of which adapter is delivering the model."""
-    adapter = CodexCliAdapter()
+    adapter = CodexCliEngine()
     models = await adapter.list_models()
     assert models
     assert "gpt-4o" in models
@@ -431,13 +431,13 @@ LIVE = os.environ.get("EUGENE_PLEXUS_HD_LIVE_CLI") == "1"
 
 @pytest.mark.skipif(not LIVE, reason="set EUGENE_PLEXUS_HD_LIVE_CLI=1 to run live")
 async def test_claude_live_call() -> None:
-    adapter = ClaudeCodeCliAdapter(timeout_seconds=180.0)
+    adapter = ClaudeCodeCliEngine(timeout_seconds=180.0)
     response = await adapter.generate(_request("Reply with exactly the four characters: PING"))
     assert "PING" in response.content
 
 
 @pytest.mark.skipif(not LIVE, reason="set EUGENE_PLEXUS_HD_LIVE_CLI=1 to run live")
 async def test_codex_live_call() -> None:
-    adapter = CodexCliAdapter(timeout_seconds=180.0)
+    adapter = CodexCliEngine(timeout_seconds=180.0)
     response = await adapter.generate(_request("Reply with exactly the four characters: PING"))
     assert "PING" in response.content

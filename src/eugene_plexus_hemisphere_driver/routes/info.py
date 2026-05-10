@@ -14,27 +14,50 @@ router = APIRouter(tags=["meta"])
 @router.get("/v1/info", response_model=DriverInfo)
 async def info(request: Request) -> DriverInfo:
     store: ConfigStore = request.app.state.config_store
-    backend_value = str(store.get("adapter") or "")
+    provider_key = str(store.get("provider") or "") or None
 
-    # Tolerate malformed config — the whole point of degraded-mode is that
-    # the driver stays reachable even when config is bad. Return 503 with a
-    # clear message instead of raising 500.
+    # The configured backend is determined by the engine the registry
+    # picks for the configured provider — so prefer the live engine's
+    # `backend_kind` over re-deriving it from config. Falls back to
+    # config-only inference when the engine isn't constructed
+    # (degraded mode), so /v1/info stays useful for ops.
+    engine = request.app.state.adapter
+    if engine is not None:
+        backend = engine.backend_kind
+        return DriverInfo(
+            backend=backend,
+            provider=provider_key,
+            modelId=store.get("modelId") or None,
+            version=__version__,
+        )
+
+    # Degraded mode: derive backend from the provider registry if we
+    # can, otherwise 503 with the same error message we always have.
     try:
-        backend = BackendKind(backend_value)
-    except ValueError as e:
+        from ..providers import get_provider
+
+        provider = get_provider(provider_key) if provider_key else None
+        if provider is not None:
+            backend = BackendKind(
+                provider.engine_kwargs.get("backend_kind") or BackendKind.openai_compat_http
+            )
+        else:
+            backend = BackendKind.claude_code_cli
+    except (KeyError, ValueError) as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=Problem(
                 type="https://github.com/eugene-plexus/hemisphere-driver#config-invalid",
                 title="Configuration invalid",
                 status=503,
-                detail=f"adapter config value is invalid: {e}",
+                detail=f"provider config value is invalid: {e}",
                 component="hemisphere-driver:degraded",
             ).model_dump(exclude_none=True),
         ) from e
 
     return DriverInfo(
         backend=backend,
-        modelId=store.get("modelId"),
+        provider=provider_key,
+        modelId=store.get("modelId") or None,
         version=__version__,
     )

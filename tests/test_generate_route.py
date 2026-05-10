@@ -16,7 +16,7 @@ from eugene_plexus_hemisphere_driver._generated.models import (
     GenerateRequest,
     GenerateResponse,
 )
-from eugene_plexus_hemisphere_driver.adapters._subprocess import CliError
+from eugene_plexus_hemisphere_driver.engines._subprocess import CliError
 
 
 class _StaticAdapter:
@@ -72,7 +72,7 @@ def test_generate_maps_cli_error_to_502(client: TestClient) -> None:
     assert response.status_code == 502
     detail = response.json()["detail"]
     assert detail["status"] == 502
-    assert detail["title"] == "Backend CLI error"
+    assert detail["title"] == "Backend error"
     assert "something broke" in detail["detail"]
     assert detail["component"].startswith("hemisphere-driver:")
 

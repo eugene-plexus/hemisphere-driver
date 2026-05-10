@@ -13,10 +13,12 @@ def test_get_config_schema_lists_expected_fields(client: TestClient) -> None:
 
     field_keys = {f["key"] for f in body["fields"]}
     expected = {
-        "adapter",
+        "provider",
         "modelId",
         "claudeCodeCliPath",
         "codexCliPath",
+        "apiKey",
+        "baseUrl",
         "port",
         "logLevel",
         "requestTimeoutSeconds",
@@ -30,20 +32,30 @@ def test_get_config_schema_lists_expected_fields(client: TestClient) -> None:
     # it via the `drivers` config and the `driverName` it stamps on
     # every emitted message.
     assert "hemisphere" not in field_keys
+    # The `adapter` field was renamed to `provider` in the registry refactor.
+    assert "adapter" not in field_keys
 
-    adapter_field = next(f for f in body["fields"] if f["key"] == "adapter")
-    assert adapter_field["valueType"] == "enum"
-    assert "claude_code_cli" in adapter_field["enumValues"]
-    assert adapter_field["requiresRestart"] is True
+    provider_field = next(f for f in body["fields"] if f["key"] == "provider")
+    assert provider_field["valueType"] == "enum"
+    # Provider keys are the user-facing subscription names, not the
+    # protocol-level engine names.
+    assert "claude_subscription" in provider_field["enumValues"]
+    assert "openai" in provider_field["enumValues"]
+    assert "xai" in provider_field["enumValues"]
+    # Friendly labels are paired one-to-one with the keys.
+    assert provider_field.get("enumLabels") is not None
+    assert len(provider_field["enumLabels"]) == len(provider_field["enumValues"])
+    assert provider_field["requiresRestart"] is True
 
 
 def test_get_config_returns_defaults_on_first_run(client: TestClient) -> None:
     response = client.get("/v1/config")
     assert response.status_code == 200
     doc = response.json()
-    assert doc["adapter"] == "claude_code_cli"
+    assert doc["provider"] == "claude_subscription"
     assert doc["port"] == 8081
     assert "hemisphere" not in doc
+    assert "adapter" not in doc  # renamed to provider
 
 
 def test_patch_applies_valid_change_and_rejects_invalid(client: TestClient) -> None:
@@ -55,6 +67,7 @@ def test_patch_applies_valid_change_and_rejects_invalid(client: TestClient) -> N
             "bogusField": True,  # unknown field
             "defaultTemperature": 0.9,  # used to live here; must now be unknown
             "hemisphere": "right",  # also used to live here; must now be unknown
+            "adapter": "openai_api",  # renamed to `provider`; old key is unknown
         },
     )
     assert response.status_code == 200
@@ -62,8 +75,14 @@ def test_patch_applies_valid_change_and_rejects_invalid(client: TestClient) -> N
     assert "claudeCodeCliPath" in body["applied"]
 
     rejected_keys = {r["key"] for r in body["rejected"]}
-    # bogusField, defaultTemperature, and hemisphere are all unknown now.
-    assert {"port", "bogusField", "defaultTemperature", "hemisphere"} <= rejected_keys
+    # All four legacy / unknown keys come through as rejections.
+    assert {
+        "port",
+        "bogusField",
+        "defaultTemperature",
+        "hemisphere",
+        "adapter",
+    } <= rejected_keys
 
     # `claudeCodeCliPath` is restart-required.
     assert body["requiresRestart"] is True

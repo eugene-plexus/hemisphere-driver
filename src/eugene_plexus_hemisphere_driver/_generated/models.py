@@ -213,7 +213,7 @@ class ConfigFieldShowWhen(BaseModel):
     """
     Predicate over another `ConfigField`'s current value. The UI
     renders the field this is attached to only when the named field
-    equals the given value.
+    equals the given value (or matches one entry in the given list).
 
     """
 
@@ -223,7 +223,7 @@ class ConfigFieldShowWhen(BaseModel):
     )
     equals: Any = Field(
         ...,
-        description="Value the named field must equal for this field to render.\nUntyped — JSON value matching the referenced field's\n`valueType`. Only literal equality is supported in v0.1;\nricher predicates (`oneOf`, `not`, etc.) deferred until a\nreal use case appears.\n",
+        description="Value the named field must equal for this field to render.\nUntyped — when scalar, matches by literal equality against\nthe referenced field's `valueType`. When an array, matches\nif the referenced field's current value equals any entry\n(set-membership). Use the array form for a field that\napplies to multiple entries of an enum (e.g. an `apiKey`\nfield shared across several OpenAI-compatible providers).\n",
     )
 
 
@@ -376,6 +376,10 @@ class DriverInfo(BaseModel):
     """
 
     backend: BackendKind
+    provider: str | None = Field(
+        None,
+        description='Operator-friendly provider key from the driver\'s\nregistry (e.g. `"openai"`, `"xai"`, `"openrouter"`,\n`"claude_subscription"`). Reflects which subscription /\nservice this driver is wrapping — `backend` reflects the\n*protocol* underneath, which can be shared across many\nproviders (e.g. xAI, OpenRouter, Ollama all report\n`backend: openai_compat_http`). Optional; omitted when\nthe driver is in degraded mode and never finished\nconstructing.\n',
+    )
     modelId: str | None = Field(
         None,
         description='Backend-specific model identifier (e.g. `"claude-opus-4-7"`).\nOptional — omitted when the driver is configured to use the\nadapter\'s built-in default rather than pinning a specific model.\n',
@@ -440,6 +444,10 @@ class ConfigField(BaseModel):
     )
     enumValues: list[str] | None = Field(
         None, description='Allowed values when `valueType == enum`.'
+    )
+    enumLabels: list[str] | None = Field(
+        None,
+        description='Optional human-readable display labels paired one-to-one\nwith `enumValues`. UIs that render an enum as a dropdown\nshould show `enumLabels[i]` while still submitting\n`enumValues[i]` as the saved value. When omitted (or\nshorter than `enumValues`), UIs fall back to the raw\nvalue as the label. Useful where the stored key is\nmachine-friendly but the user-facing label isn\'t —\ne.g. `claude_subscription` saved, "Claude (Pro/Max)"\nshown.\n',
     )
     sensitive: bool | None = Field(
         False,
