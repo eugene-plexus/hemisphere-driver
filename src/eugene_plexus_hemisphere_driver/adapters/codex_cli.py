@@ -18,6 +18,27 @@ text content, and pull the final `usage` from `turn.completed`.
 Sandbox is `read-only` and `--ephemeral` so codex doesn't try to mutate the
 working tree or persist session state. `--skip-git-repo-check` allows the
 hemisphere-driver process to run outside a repo.
+
+## Known limitations vs the Claude Code adapter
+
+Codex CLI does not expose an equivalent of Claude Code's
+`--system-prompt` flag, so we have no way to suppress its built-in
+system prompt or its cwd-injection. Practical consequences:
+
+- **Persona override**: any system messages in the request are folded
+  into the user prompt by `messages_to_prompt`, then prefixed with the
+  CLI's own (coding-agent-flavored) system prompt. The Eugene persona
+  reads as user content rather than a directive, which the smoke test
+  (2026-05-09) showed Codex tends to ignore.
+- **cwd identity leak**: Codex includes the cwd in its prompt context.
+  Run the driver from a neutral directory if running this adapter is
+  important for blind-bicameral integrity.
+
+For self-hosted / personal-subscription deployments, the recommended
+workaround is to use the `openai_api` adapter for the OpenAI-side
+hemisphere instead — it gives full persona + cwd control. The Codex CLI
+adapter is retained for the case where the operator's only OpenAI
+access is via a Codex-eligible subscription.
 """
 
 from __future__ import annotations

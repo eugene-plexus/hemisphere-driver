@@ -44,22 +44,23 @@ def test_patch_applies_valid_change_and_rejects_invalid(client: TestClient) -> N
     response = client.patch(
         "/v1/config",
         json={
-            "logLevel": "DEBUG",  # valid
+            "defaultTemperature": 0.9,  # valid, hot-swappable
             "port": 99999,  # out of range
             "bogusField": True,  # unknown field
         },
     )
     assert response.status_code == 200
     body = response.json()
-    assert "logLevel" in body["applied"]
+    assert "defaultTemperature" in body["applied"]
 
     rejected_keys = {r["key"] for r in body["rejected"]}
     assert {"port", "bogusField"} <= rejected_keys
 
+    # defaultTemperature is read live at request time, so no restart needed.
     assert body["requiresRestart"] is False
 
     follow = client.get("/v1/config")
-    assert follow.json()["logLevel"] == "DEBUG"
+    assert follow.json()["defaultTemperature"] == 0.9
     assert follow.json()["port"] == 8081  # unchanged after rejection
 
 

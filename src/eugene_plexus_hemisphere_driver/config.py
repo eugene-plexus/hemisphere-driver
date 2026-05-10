@@ -22,6 +22,7 @@ from ._generated.models import (
     ConfigDocument,
     ConfigField,
     ConfigFieldError,
+    ConfigFieldShowWhen,
     ConfigSchema,
     ConfigUpdateRequest,
     ConfigUpdateResult,
@@ -70,6 +71,7 @@ FIELDS: list[ConfigField] = [
         ),
         category="adapter",
         valueType=ConfigValueType.string,
+        requiresRestart=True,
     ),
     ConfigField(
         key="claudeCodeCliPath",
@@ -78,6 +80,8 @@ FIELDS: list[ConfigField] = [
         category="adapter",
         valueType=ConfigValueType.file_path,
         default="claude",
+        requiresRestart=True,
+        showWhen=ConfigFieldShowWhen(key="adapter", equals="claude_code_cli"),
     ),
     ConfigField(
         key="codexCliPath",
@@ -86,6 +90,8 @@ FIELDS: list[ConfigField] = [
         category="adapter",
         valueType=ConfigValueType.file_path,
         default="codex",
+        requiresRestart=True,
+        showWhen=ConfigFieldShowWhen(key="adapter", equals="codex_cli"),
     ),
     ConfigField(
         key="openaiApiKey",
@@ -97,6 +103,8 @@ FIELDS: list[ConfigField] = [
         category="adapter",
         valueType=ConfigValueType.secret,
         sensitive=True,
+        requiresRestart=True,
+        showWhen=ConfigFieldShowWhen(key="adapter", equals="openai_api"),
     ),
     ConfigField(
         key="openaiBaseUrl",
@@ -109,6 +117,8 @@ FIELDS: list[ConfigField] = [
         category="adapter",
         valueType=ConfigValueType.url,
         default="https://api.openai.com",
+        requiresRestart=True,
+        showWhen=ConfigFieldShowWhen(key="adapter", equals="openai_api"),
     ),
     ConfigField(
         key="port",
@@ -124,11 +134,15 @@ FIELDS: list[ConfigField] = [
     ConfigField(
         key="logLevel",
         label="Log Level",
-        description="Logging verbosity.",
+        description=(
+            "Logging verbosity. Read by uvicorn at startup; restart required "
+            "for the new level to take effect."
+        ),
         category="logging",
         valueType=ConfigValueType.enum,
         default="INFO",
         enumValues=["DEBUG", "INFO", "WARNING", "ERROR"],
+        requiresRestart=True,
     ),
     ConfigField(
         key="defaultMaxTokens",
@@ -154,13 +168,15 @@ FIELDS: list[ConfigField] = [
         label="Request Timeout",
         description=(
             "Maximum seconds the driver will wait for one CLI invocation "
-            "before killing the subprocess and returning an error."
+            "before killing the subprocess and returning an error. Baked into "
+            "the adapter at startup; restart required."
         ),
         category="generation",
         valueType=ConfigValueType.duration,
         default=120,
         minimum=5,
         maximum=900,
+        requiresRestart=True,
     ),
 ]
 

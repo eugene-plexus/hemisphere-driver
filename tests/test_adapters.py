@@ -197,6 +197,99 @@ async def test_claude_adapter_handles_multiline_history_via_stdin(
     assert "Follow-up\nwith\nnewlines" in decoded
 
 
+async def test_claude_adapter_passes_system_prompt_when_system_messages_exist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Persona / cwd-leak fix: when the request includes system messages,
+    we send them as `--system-prompt`. Per Claude Code's docs, that flag
+    *replaces* the default system prompt, which transitively disables the
+    automatic cwd-injection that was leaking hemisphere identity in the
+    smoke test.
+    """
+    captured = _patch_run_cli(
+        monkeypatch,
+        lambda argv: CliResult(
+            stdout=json.dumps(CLAUDE_OK_ENVELOPE).encode(),
+            stderr=b"",
+            returncode=0,
+            elapsed_ms=1000,
+        ),
+    )
+    adapter = ClaudeCodeCliAdapter()
+    await adapter.generate(
+        GenerateRequest(
+            messages=[
+                Message(role=Role.system, content="You are Eugene."),
+                Message(role=Role.user, content="hi"),
+            ]
+        )
+    )
+    argv = captured["argv"]
+    assert "--system-prompt" in argv
+    idx = argv.index("--system-prompt")
+    assert argv[idx + 1] == "You are Eugene."
+
+
+async def test_claude_adapter_omits_system_prompt_when_no_system_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No system messages -> no --system-prompt. Claude Code's default
+    system prompt (with its cwd injection) takes over in that case.
+    Documenting the contract explicitly so the persona/cwd behavior is
+    pinned to the request shape, not implicit."""
+    captured = _patch_run_cli(
+        monkeypatch,
+        lambda argv: CliResult(
+            stdout=json.dumps(CLAUDE_OK_ENVELOPE).encode(),
+            stderr=b"",
+            returncode=0,
+            elapsed_ms=1000,
+        ),
+    )
+    adapter = ClaudeCodeCliAdapter()
+    await adapter.generate(_request())  # user-only message
+    assert "--system-prompt" not in captured["argv"]
+
+
+async def test_claude_adapter_preserves_utf8_em_dash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: an em-dash (U+2014) returned by Claude Code must come
+    through as a single character, not as the `â€"` triple-byte mojibake
+    seen in the smoke test on 2026-05-09. The fix is environment-level
+    (PYTHONUTF8 etc. on the subprocess); this test asserts the pipeline
+    *parses* UTF-8 bytes correctly, regardless of how they got there.
+    """
+    em_dash = "—"
+    envelope = {**CLAUDE_OK_ENVELOPE, "result": f"Two paragraphs{em_dash}separated."}
+    payload = json.dumps(envelope, ensure_ascii=False).encode("utf-8")
+    # Sanity: the em-dash is encoded as the canonical 3-byte UTF-8 sequence.
+    assert b"\xe2\x80\x94" in payload
+
+    _patch_run_cli(
+        monkeypatch,
+        lambda argv: CliResult(stdout=payload, stderr=b"", returncode=0, elapsed_ms=10),
+    )
+    adapter = ClaudeCodeCliAdapter()
+    response = await adapter.generate(_request())
+    assert em_dash in response.content
+    assert "â€" not in response.content
+
+
+async def test_run_cli_passes_utf8_env_to_subprocess() -> None:
+    """The real `run_cli` sets PYTHONUTF8=1 + PYTHONIOENCODING=utf-8 on the
+    child's environment so a Python subprocess can't fall back to the
+    Windows system codepage. We assert by inspecting the env-builder
+    helper directly — spawning a real subprocess from the test suite is
+    out of scope here.
+    """
+    env = _subprocess._utf8_subprocess_env()
+    assert env["PYTHONUTF8"] == "1"
+    assert env["PYTHONIOENCODING"] == "utf-8"
+    assert env["LC_ALL"] == "C.UTF-8"
+    assert env["LANG"] == "C.UTF-8"
+
+
 async def test_claude_adapter_raises_on_is_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

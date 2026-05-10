@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import Protocol
+from typing import Any, Protocol
 
 from fastapi import FastAPI
 
@@ -30,34 +30,41 @@ class _Adapter(Protocol):
     async def generate(self, request: GenerateRequest) -> GenerateResponse: ...
 
 
-def build_adapter(store: ConfigStore) -> _Adapter:
-    """Construct the configured adapter from the runtime config store."""
-    adapter_kind = str(store.get("adapter") or "")
-    model_id = store.get("modelId") or None
-    timeout = float(store.get("requestTimeoutSeconds") or 120)
+def build_adapter_with(get: Callable[[str], Any]) -> _Adapter:
+    """Construct an adapter from a key->value lookup. Used directly by the
+    `/v1/config/test` endpoint to build a temporary adapter from saved
+    config + transient overrides without touching the persisted store."""
+    adapter_kind = str(get("adapter") or "")
+    model_id = get("modelId") or None
+    timeout = float(get("requestTimeoutSeconds") or 120)
 
     if adapter_kind == "claude_code_cli":
         return ClaudeCodeCliAdapter(
-            binary_path=str(store.get("claudeCodeCliPath") or "claude"),
+            binary_path=str(get("claudeCodeCliPath") or "claude"),
             model_id=model_id,
             timeout_seconds=timeout,
         )
     if adapter_kind == "codex_cli":
         return CodexCliAdapter(
-            binary_path=str(store.get("codexCliPath") or "codex"),
+            binary_path=str(get("codexCliPath") or "codex"),
             model_id=model_id,
             timeout_seconds=timeout,
         )
     if adapter_kind == "openai_api":
         return OpenAiApiAdapter(
-            api_key=str(store.get("openaiApiKey") or "") or None,
-            base_url=str(store.get("openaiBaseUrl") or "https://api.openai.com"),
+            api_key=str(get("openaiApiKey") or "") or None,
+            base_url=str(get("openaiBaseUrl") or "https://api.openai.com"),
             model_id=model_id or "gpt-5",
             timeout_seconds=timeout,
         )
     raise ValueError(
         f"unknown adapter {adapter_kind!r}; valid: claude_code_cli, codex_cli, openai_api"
     )
+
+
+def build_adapter(store: ConfigStore) -> _Adapter:
+    """Construct the configured adapter from the runtime config store."""
+    return build_adapter_with(store.get)
 
 
 @asynccontextmanager

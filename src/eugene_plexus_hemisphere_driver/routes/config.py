@@ -1,14 +1,22 @@
-"""Config protocol routes: GET /v1/config, GET /v1/config/schema, PATCH /v1/config."""
+"""Config protocol routes: GET, PATCH, schema, test."""
 
 from __future__ import annotations
+
+import time
+from typing import Any
 
 from fastapi import APIRouter, Request
 
 from .._generated.models import (
     ConfigDocument,
     ConfigSchema,
+    ConfigTestRequest,
+    ConfigTestResult,
     ConfigUpdateRequest,
     ConfigUpdateResult,
+    GenerateRequest,
+    Message,
+    Role,
 )
 from ..config import ConfigStore, as_schema
 
@@ -33,3 +41,56 @@ async def patch_config(
 ) -> ConfigUpdateResult:
     store: ConfigStore = request.app.state.config_store
     return store.apply_patch(body)
+
+
+@router.post("/v1/config/test", response_model=ConfigTestResult)
+async def test_config(
+    request: Request,
+    body: ConfigTestRequest | None = None,
+) -> ConfigTestResult:
+    """Build a temporary adapter from saved + override config and run a
+    minimal generate() round-trip. Override values are NOT persisted —
+    PATCH /v1/config is still required to commit them."""
+    # Imported lazily to avoid a routes -> app -> routes circular dep.
+    from ..app import build_adapter_with
+
+    start = time.perf_counter()
+    store: ConfigStore = request.app.state.config_store
+    overrides: dict[str, Any] = {}
+    if body and body.overrides:
+        overrides = body.overrides.model_dump(exclude_none=True)
+
+    def get(key: str) -> Any:
+        return overrides[key] if key in overrides else store.get(key)
+
+    try:
+        adapter = build_adapter_with(get)
+    except Exception as e:
+        return ConfigTestResult(
+            ok=False,
+            component="hemisphere-driver",
+            latencyMs=int((time.perf_counter() - start) * 1000),
+            error=f"adapter construction failed: {e}",
+        )
+
+    test_request = GenerateRequest(
+        messages=[Message(role=Role.user, content="Reply with exactly: PING")],
+    )
+    try:
+        response = await adapter.generate(test_request)
+    except Exception as e:
+        return ConfigTestResult(
+            ok=False,
+            component="hemisphere-driver",
+            latencyMs=int((time.perf_counter() - start) * 1000),
+            error=f"{adapter.backend_kind} generate failed: {e}",
+        )
+
+    elapsed_ms = int((time.perf_counter() - start) * 1000)
+    return ConfigTestResult(
+        ok=True,
+        component="hemisphere-driver",
+        latencyMs=elapsed_ms,
+        summary=f"{adapter.backend_kind} responded in {response.latencyMs or 0}ms.",
+        sampleOutput=response.content[:200],
+    )
