@@ -19,7 +19,6 @@ def test_get_config_schema_lists_expected_fields(client: TestClient) -> None:
         "codexCliPath",
         "apiKey",
         "baseUrl",
-        "port",
         "logLevel",
         "requestTimeoutSeconds",
     }
@@ -53,7 +52,9 @@ def test_get_config_returns_defaults_on_first_run(client: TestClient) -> None:
     assert response.status_code == 200
     doc = response.json()
     assert doc["provider"] == "claude_subscription"
-    assert doc["port"] == 8081
+    # `port` is no longer a config field — owned by the watchdog topology
+    # via EUGENE_PLEXUS_HD_BIND_PORT. Both legacy keys are rejected.
+    assert "port" not in doc
     assert "hemisphere" not in doc
     assert "adapter" not in doc  # renamed to provider
 
@@ -63,7 +64,7 @@ def test_patch_applies_valid_change_and_rejects_invalid(client: TestClient) -> N
         "/v1/config",
         json={
             "claudeCodeCliPath": "/usr/local/bin/claude",  # valid string update
-            "port": 99999,  # out of range
+            "port": 99999,  # `port` is no longer a config field; rejected as unknown
             "bogusField": True,  # unknown field
             "defaultTemperature": 0.9,  # used to live here; must now be unknown
             "hemisphere": "right",  # also used to live here; must now be unknown
@@ -75,7 +76,7 @@ def test_patch_applies_valid_change_and_rejects_invalid(client: TestClient) -> N
     assert "claudeCodeCliPath" in body["applied"]
 
     rejected_keys = {r["key"] for r in body["rejected"]}
-    # All four legacy / unknown keys come through as rejections.
+    # All five legacy / unknown keys come through as rejections.
     assert {
         "port",
         "bogusField",
@@ -89,7 +90,7 @@ def test_patch_applies_valid_change_and_rejects_invalid(client: TestClient) -> N
 
     follow = client.get("/v1/config")
     assert follow.json()["claudeCodeCliPath"] == "/usr/local/bin/claude"
-    assert follow.json()["port"] == 8081  # unchanged after rejection
+    assert "port" not in follow.json()
 
 
 def test_schema_modelid_is_string_when_no_models_discovered(client: TestClient) -> None:
@@ -137,9 +138,11 @@ def test_schema_modelid_stays_string_without_models() -> None:
 
 
 def test_patch_with_restart_required_field_sets_pending(client: TestClient) -> None:
-    response = client.patch("/v1/config", json={"port": 8090})
+    # `claudeCodeCliPath` is one of the remaining restart-required fields
+    # after `port` was promoted out of the config schema.
+    response = client.patch("/v1/config", json={"claudeCodeCliPath": "/usr/local/bin/claude"})
     assert response.status_code == 200
     body = response.json()
-    assert body["applied"] == ["port"]
+    assert body["applied"] == ["claudeCodeCliPath"]
     assert body["requiresRestart"] is True
-    assert body["pendingRestart"] == ["port"]
+    assert body["pendingRestart"] == ["claudeCodeCliPath"]

@@ -91,26 +91,16 @@ def _modelid_field() -> ConfigField:
 
 
 def _common_fields() -> list[ConfigField]:
-    """Provider-agnostic fields — port, logging, timeouts."""
+    """Provider-agnostic fields — logging and timeouts.
+
+    The bind port deliberately is NOT in this list. Ports are owned by
+    the watchdog topology (`watchdog.yaml`), passed to spawned children
+    via `EUGENE_PLEXUS_HD_BIND_PORT`. Two sources of truth on `port`
+    was an OpenClaw-style trap waiting to bite — the watchdog spawns at
+    one port, the driver's own config says another, and the orchestrator
+    can't reach the driver. Now there's one source.
+    """
     return [
-        ConfigField(
-            key="port",
-            label="HTTP port",
-            description=(
-                "Port the orchestrator (or any other client) connects "
-                "to *this driver* on. The driver listens on it; "
-                "nothing outside this process. v0.1 default leaves "
-                "the canonical bicameral pair on 8081 (left) and "
-                "8082 (right). Change only if those are taken on "
-                "your machine."
-            ),
-            category="network",
-            valueType=ConfigValueType.integer,
-            default=8081,
-            minimum=1,
-            maximum=65535,
-            requiresRestart=True,
-        ),
         ConfigField(
             key="logLevel",
             label="Log level",
