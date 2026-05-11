@@ -37,15 +37,14 @@ Endpoints:
 
 ## Backends (adapters)
 
-v0.1 ships with three adapters. The two remaining ones (`anthropic_api`, `openai_compat_http`) land in v0.2.
+v0.1 ships with three adapter classes plus a provider registry. The orchestrator-facing config picks a `provider` (e.g. `claude_subscription`, `openai`, `minimax`, `ollama_local`); the registry maps each provider to the right adapter with the right base URL.
 
-| Adapter              | Status   | Notes |
-|----------------------|----------|-------|
-| `claude_code_cli`    | ✅ wired | Wraps the `claude` CLI. Uses your Claude Pro/Max subscription — no API billing. System prompts are passed via `--system-prompt` so persona control is preserved. |
-| `codex_cli`          | ✅ wired | Wraps `codex-cli`. Uses your ChatGPT subscription. ⚠️ Codex CLI has no `--system-prompt` equivalent; persona override and cwd-injection cannot be suppressed from the CLI surface. Use `openai_api` if you need full persona control on the OpenAI side. |
-| `openai_api`         | ✅ wired | Direct HTTP to OpenAI's `/v1/chat/completions` API or any OpenAI-compatible provider (Together, Groq, Fireworks, MiniMax, vLLM, LM Studio, etc.). Pay-per-token when the provider charges. |
-| `anthropic_api`      | v0.2+    | Direct HTTP to Anthropic. Pay-per-token. |
-| `openai_compat_http` | v0.2+    | Convenience wrapper around `openai_api` for known local server profiles (Ollama, vLLM, LM Studio). |
+| Adapter                | Providers it serves | Notes |
+|------------------------|---------------------|-------|
+| `claude_code_cli`      | `claude_subscription` | Wraps the `claude` CLI. Uses your Claude Pro/Max subscription — no API billing. System prompts are passed via `--system-prompt` so persona control is preserved. |
+| `codex_cli`            | `chatgpt_subscription` | Wraps `codex-cli`. Uses your ChatGPT subscription. ⚠️ Codex CLI has no `--system-prompt` equivalent; persona override and cwd-injection cannot be suppressed from the CLI surface. Use the `openai` provider via `openai_compat_http` if you need full persona control on the OpenAI side. |
+| `openai_compat_http`   | `openai`, `xai`, `openrouter`, `minimax`, `ollama_local`, `lmstudio_local`, `openai_compat_custom` | Direct HTTP to any OpenAI-compatible `/v1/chat/completions` endpoint. Provider registry sets the base URL and any deny patterns (e.g. OpenAI's reasoning-only models that reject `temperature`); the `openai_compat_custom` provider lets the operator point at any URL with their own `baseUrl`. Pay-per-token when the provider charges; free for local backends. |
+| `anthropic_api`        | (planned for v0.2+) | Direct HTTP to Anthropic. Pay-per-token. |
 
 The CLI adapters are **primary production mode for personal installations** — they run on the AI subscription you already pay for, no separate API bill.
 
@@ -58,7 +57,7 @@ pip install -e ".[dev]"
 python -m eugene_plexus_hemisphere_driver
 ```
 
-By default it listens on `http://127.0.0.1:8081`. Configure via env vars (12-factor) or by editing `config.yaml` (auto-created in the working directory on first run).
+By default it listens on `http://127.0.0.1:8081`, overridable via `EUGENE_PLEXUS_HD_BIND_PORT` (the watchdog uses this when supervising). Configure runtime behavior via env vars (12-factor) or by editing `config.yaml` (auto-created in the working directory on first run).
 
 ### Pairing with the orchestrator
 
