@@ -55,8 +55,8 @@ def _patch_run_cli(
         captured["stdin_input"] = stdin_input
         result = fn(argv)
         if hasattr(result, "__await__"):
-            return await result  # type: ignore[no-any-return]
-        return result  # type: ignore[return-value]
+            return await result
+        return result
 
     # Patch on every importing module's symbol table because we use
     # `from ._subprocess import run_cli` style imports.

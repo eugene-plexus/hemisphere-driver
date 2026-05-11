@@ -28,6 +28,7 @@ dependencies = [
     "pydantic>=2.9,<3",
     "pydantic-settings>=2.6,<3",
     "pyyaml>=6.0,<7",
+    "pyjwt>=2.9,<3",
 ]
 
 [project.optional-dependencies]
@@ -77,6 +78,10 @@ ignore = []
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["E501"]
+# FastAPI uses Depends() as an argument default, which is the framework's
+# idiom for dependency injection but trips ruff's "no function calls in
+# defaults" rule. Allow it only in the dependency module that defines them.
+"src/eugene_plexus_hemisphere_driver/dependencies.py" = ["B008"]
 
 # -----------------------------------------------------------------------------
 # Mypy

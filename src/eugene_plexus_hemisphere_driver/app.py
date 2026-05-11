@@ -7,10 +7,12 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from . import __version__
+from .auth_state import load_auth_state
 from .config import ConfigStore
+from .dependencies import require_authorized, require_operator
 from .engines.base import HemisphereEngine
 from .providers import get_provider
 from .routes import admin as admin_routes
@@ -67,6 +69,17 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         store.load()
     app.state.config_store = store
     app.state.safe_mode = settings.safe_mode
+
+    # v0.2 auth state. Tests can pre-populate `app.state.auth_state` to
+    # exercise authed paths; the default lifespan build reads env vars
+    # via Settings and produces an auth-disabled state when the watchdog
+    # didn't supply AUTH_SIGNING_KEY.
+    if not hasattr(app.state, "auth_state"):
+        app.state.auth_state = load_auth_state(
+            signing_key_b64=settings.auth_signing_key,
+            service_token=settings.service_token,
+            master_key_b64=settings.master_key,
+        )
 
     # Engine construction can fail (missing API key, unknown provider,
     # bad binary path, etc). The driver MUST come up anyway so its
@@ -132,10 +145,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
 
+    # Health stays unauthenticated — supervisors and load balancers need
+    # to probe it without holding credentials.
     app.include_router(health_routes.router)
-    app.include_router(info_routes.router)
-    app.include_router(config_routes.router)
-    app.include_router(generate_routes.router)
-    app.include_router(admin_routes.router)
+
+    # Mixed surfaces: /v1/info backs UI model dropdowns (operator) and
+    # orchestrator health checks (service); /v1/generate is called by
+    # the orchestrator (service:orchestrator) but operators can hit it
+    # too for one-off testing.
+    authorized = [Depends(require_authorized)]
+    app.include_router(info_routes.router, dependencies=authorized)
+    app.include_router(generate_routes.router, dependencies=authorized)
+
+    # Operator-only surfaces: config edits and the restart trigger ride
+    # on the UI's session token. Service tokens are rejected so a
+    # compromised peer can't reconfigure the driver.
+    operator_only = [Depends(require_operator)]
+    app.include_router(config_routes.router, dependencies=operator_only)
+    app.include_router(admin_routes.router, dependencies=operator_only)
 
     return app

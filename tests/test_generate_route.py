@@ -45,7 +45,7 @@ def test_generate_returns_adapter_response(client: TestClient) -> None:
         modelId="claude-opus-4-7",
         latencyMs=150,
     )
-    client.app.state.adapter = _StaticAdapter(response=fake)
+    client.app.state.adapter = _StaticAdapter(response=fake)  # type: ignore[attr-defined]
 
     response = client.post(
         "/v1/generate",
@@ -62,7 +62,7 @@ def test_generate_returns_adapter_response(client: TestClient) -> None:
 
 
 def test_generate_maps_cli_error_to_502(client: TestClient) -> None:
-    client.app.state.adapter = _StaticAdapter(error=CliError("something broke"))
+    client.app.state.adapter = _StaticAdapter(error=CliError("something broke"))  # type: ignore[attr-defined]
 
     response = client.post(
         "/v1/generate",

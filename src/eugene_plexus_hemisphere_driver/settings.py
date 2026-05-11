@@ -34,6 +34,22 @@ class Settings(BaseSettings):
     `config_file` normally, so the next non-safe-mode boot picks up the
     repair. Per the safe-mode contract in specs/openapi/hemisphere-driver.yaml."""
 
+    auth_signing_key: str | None = None
+    """Base64-encoded 32-byte HMAC signing key, supplied by the watchdog at
+    spawn time (EUGENE_PLEXUS_HD_AUTH_SIGNING_KEY). When absent the driver
+    runs unauthenticated — dev / standalone path only; production via the
+    watchdog always supplies this."""
+
+    service_token: str | None = None
+    """Long-lived service JWT (EUGENE_PLEXUS_HD_SERVICE_TOKEN). Not consumed
+    by the driver in v0.2 — captured for v0.3 when hemispheres may read
+    from memory. The watchdog supplies it for symmetry with other kinds."""
+
+    master_key: str | None = None
+    """Base64-encoded 32-byte secretbox key for at-rest decryption
+    (EUGENE_PLEXUS_HD_MASTER_KEY). Reserved for Phase 6 (encrypted apiKey
+    in adapter config); Phase 4 does not consume it."""
+
 
 def load_settings() -> Settings:
     return Settings()
