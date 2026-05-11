@@ -6,18 +6,25 @@ Implements the shared Eugene Plexus config protocol:
 * `GET /v1/config` -> current effective values, secrets redacted (`as_document()`)
 * `PATCH /v1/config` -> partial update, per-key validation (`apply_patch()`)
 
-Storage backend in v0.1 is a flat YAML file. Sensitive values are stored
-plain on disk for now; at-rest encryption is future work.
+v0.2 at-rest encryption (Phase 6): when constructed with a master key,
+the store encrypts `sensitive: true` fields as libsodium-secretbox
+envelopes before writing to disk, and decrypts them transparently
+on load. In-memory `_values` always holds plaintext so engine
+construction (`apiKey` -> `Authorization: Bearer ...`) doesn't need
+to know about the at-rest format. Plaintext-on-disk configs from v0.1
+load fine and auto-upgrade to envelopes on the next save.
 """
 
 from __future__ import annotations
 
+import logging
 import threading
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from . import security
 from ._generated.models import (
     ConfigDocument,
     ConfigField,
@@ -31,6 +38,8 @@ from .engines.claude_code_cli import ClaudeCodeCliEngine
 from .engines.codex_cli import CodexCliEngine
 from .engines.openai_compat_http import OpenAiCompatibleHttpEngine
 from .providers import PROVIDERS, collect_extra_field_specs, providers_using
+
+log = logging.getLogger(__name__)
 
 REDACTED = "<redacted>"
 
@@ -275,13 +284,24 @@ def _validate_value(field: ConfigField, value: Any) -> str | None:
 
 
 class ConfigStore:
-    """File-backed config state. Thread-safe for the simple read/write pattern."""
+    """File-backed config state. Thread-safe for the simple read/write pattern.
 
-    def __init__(self, path: Path) -> None:
+    When constructed with `master_key`, sensitive fields are sealed in
+    a libsodium-secretbox envelope before being written to disk and
+    transparently decrypted on load. Without a master key (dev runs,
+    pre-login window) the store still works — plaintext on disk,
+    matching the v0.1 behavior. Envelope-shaped values on disk that
+    can't be decrypted (no key, wrong key, tampered ciphertext) get
+    skipped with a warning; the engine then sees the field as unset
+    and `from_config` produces a clear "no API key" error.
+    """
+
+    def __init__(self, path: Path, *, master_key: bytes | None = None) -> None:
         self._path = path
         self._lock = threading.Lock()
         self._values: dict[str, Any] = _defaults()
         self._pending_restart: set[str] = set()
+        self._master_key = master_key
 
     def load(self) -> None:
         """Load from the configured file, creating it with defaults if absent."""
@@ -292,12 +312,39 @@ class ConfigStore:
                     raise ValueError(f"config file {self._path} must be a YAML mapping at the root")
                 merged = _defaults()
                 for k, v in raw.items():
-                    if k in _FIELDS_BY_KEY:
-                        merged[k] = v
+                    if k not in _FIELDS_BY_KEY:
+                        continue
+                    merged[k] = self._decrypt_loaded(k, v)
                 self._values = merged
             else:
                 self._values = _defaults()
                 self._write_locked()
+
+    def _decrypt_loaded(self, key: str, value: Any) -> Any:
+        """Resolve an on-disk value to its in-memory (plaintext) form.
+
+        Plaintext-on-disk (v0.1 configs, non-sensitive fields): pass
+        through unchanged. Envelope-shape values: decrypt if we have a
+        key; otherwise log a warning and drop to None so the engine
+        sees an unconfigured field rather than a raw envelope dict.
+        """
+        if not security.is_envelope(value):
+            return value
+        if self._master_key is None:
+            log.warning(
+                "config field %r is encrypted on disk but no master key is "
+                "available; treating as unset (engine will fail clearly)",
+                key,
+            )
+            return None
+        try:
+            envelope = security.Envelope.from_dict(value)
+            return security.open_envelope(envelope, self._master_key)
+        except ValueError as e:
+            log.warning(
+                "config field %r failed to decrypt (%s); treating as unset", key, e
+            )
+            return None
 
     def as_document(self) -> ConfigDocument:
         with self._lock:
@@ -357,5 +404,25 @@ class ConfigStore:
 
     def _write_locked(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        # Build the on-disk dict by encrypting sensitive fields when
+        # we have a key. Non-sensitive fields and (rarely) sensitive
+        # ones during the no-master-key window pass through as
+        # plaintext — matching v0.1 behavior so dev / pre-login flows
+        # keep working.
+        on_disk: dict[str, Any] = {}
+        for key, value in self._values.items():
+            field = _FIELDS_BY_KEY.get(key)
+            if (
+                field is not None
+                and field.sensitive
+                and value is not None
+                and self._master_key is not None
+                and isinstance(value, str)
+                and value != ""
+            ):
+                envelope = security.seal(value, self._master_key)
+                on_disk[key] = envelope.to_dict()
+            else:
+                on_disk[key] = value
         with self._path.open("w", encoding="utf-8") as f:
-            yaml.safe_dump(self._values, f, sort_keys=True, default_flow_style=False)
+            yaml.safe_dump(on_disk, f, sort_keys=True, default_flow_style=False)

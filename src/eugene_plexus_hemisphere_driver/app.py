@@ -53,7 +53,21 @@ def build_engine(store: ConfigStore) -> HemisphereEngine:
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
-    store = ConfigStore(settings.config_file)
+
+    # v0.2 auth state has to be built BEFORE the ConfigStore so its
+    # master key can be threaded into the store for at-rest envelope
+    # decryption of sensitive fields (apiKey, etc). Tests can pre-
+    # populate `app.state.auth_state`; production reads it from env.
+    if not hasattr(app.state, "auth_state"):
+        app.state.auth_state = load_auth_state(
+            signing_key_b64=settings.auth_signing_key,
+            service_token=settings.service_token,
+            master_key_b64=settings.master_key,
+        )
+
+    store = ConfigStore(
+        settings.config_file, master_key=app.state.auth_state.master_key
+    )
     if settings.safe_mode:
         # Safe mode: skip the on-disk config entirely, leaving the store
         # populated with built-in defaults. PATCH /v1/config still writes
@@ -69,17 +83,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         store.load()
     app.state.config_store = store
     app.state.safe_mode = settings.safe_mode
-
-    # v0.2 auth state. Tests can pre-populate `app.state.auth_state` to
-    # exercise authed paths; the default lifespan build reads env vars
-    # via Settings and produces an auth-disabled state when the watchdog
-    # didn't supply AUTH_SIGNING_KEY.
-    if not hasattr(app.state, "auth_state"):
-        app.state.auth_state = load_auth_state(
-            signing_key_b64=settings.auth_signing_key,
-            service_token=settings.service_token,
-            master_key_b64=settings.master_key,
-        )
 
     # Engine construction can fail (missing API key, unknown provider,
     # bad binary path, etc). The driver MUST come up anyway so its
